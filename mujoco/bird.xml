@@ -1,0 +1,130 @@
+<mujoco model="xml">
+  <compiler angle="radian" meshdir="meshes/" boundmass="1e-06" boundinertia="1e-14"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <asset>
+    <mesh name="body"   content_type="model/stl" file="body.stl"   scale="0.001 0.001 0.001"/>
+    <mesh name="RWing1" content_type="model/stl" file="RWing1.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="RWing2" content_type="model/stl" file="RWing2.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="RWing3" content_type="model/stl" file="RWing3.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="RWing4" content_type="model/stl" file="RWing4.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="RWing5" content_type="model/stl" file="RWing5.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="RWing6" content_type="model/stl" file="RWing6.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing1" content_type="model/stl" file="LWing1.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing2" content_type="model/stl" file="LWing2.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing3" content_type="model/stl" file="LWing3.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing4" content_type="model/stl" file="LWing4.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing5" content_type="model/stl" file="LWing5.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="LWing6" content_type="model/stl" file="LWing6.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+  
+  <worldbody>
+    <body name="body" pos="0 0 0.801">
+    <!-- <freejoint name="body_free"/> -->
+
+      <inertial pos="-0.102343477438 5.05789053343e-08 -0.000785347936" mass="0.946680" fullinertia="0.00146143 0.00954167 0.00970986 0 -0.000201759 0"/>
+      <site name="imu" pos="0 0 0" quat="1 0 0 0" size="0.005" rgba="1 0 0 1"/>
+      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.7 0.7 0.7 0.2" mesh="body"/>
+      <geom name="body_collision" type="mesh" contype="0" conaffinity="1" rgba="0.7 0.7 0.7 0.2" mesh="body"/>
+
+      <body name="RWing1" pos="-0.054 -0.066 0.012">
+        <inertial pos="0.0140954 0 0" mass="0.0142420" diaginertia="2.09460e-06 2.09460e-06 2.09460e-06"/>
+        <joint name="J1" pos="0 0 0" axis="1 0 0"/>
+        <geom pos="0.054 0.066 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing1"/>
+        
+        <body name="RWing2" pos="0.022 -0.006 0">
+          <inertial pos="0.01 -0.006 0" mass="0.0236670" diaginertia="4.88338e-06 4.88338e-06 4.88338e-06"/>
+          <joint name="J2" pos="0 0 0" axis="0 -1 0"/>
+          <geom pos="0.032 0.072 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing2"/>
+          
+          <body name="RWing3" pos="0.02 -0.006 -0.006">
+            <inertial pos="-0.00832606 -0.0495296 0.000252962" quat="0.352206 0.184514 -0.613148 0.682609" mass="0.0236670" diaginertia="4.28992e-04 4.02883e-04 2.61125e-05"/>
+            <joint name="J3" pos="0 0 0" axis="0 0 1"/>
+            <geom pos="0.012 0.078 -0.006" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing3"/>
+            
+            <body name="RWing4" pos="-0.017385 -0.112374 0.010924">
+              <inertial pos="0.0159714 -0.0443005 -0.00446237" quat="0.680193 0.680193 0.193229 0.193229" mass="0.0355005" diaginertia="5.93099e-04 5.63362e-04 2.97498e-05"/>
+              <joint name="J4" pos="0 0 0" axis="0.272948 0.181163 0.944817"/>
+              <geom pos="0.029385 0.190374 -0.016924" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing4"/>
+              
+              <body name="RWing5" pos="0.038473 -0.083152 -0.006535">
+                <inertial pos="0.00762387 -0.00474471 0.000283107" mass="0.00591675" diaginertia="4.84493e-07 4.84493e-07 4.84493e-07"/>
+                <joint name="J5" pos="0 0 0" axis="0.46039 -0.885988 -0.055365"/>
+                <geom pos="-0.009088 0.273526 -0.010389" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing5"/>
+                
+                <body name="RWing6" pos="0.00608 -0.012127 0.000242">
+                  <inertial pos="0.00535555 -0.0427722 -0.0148432" quat="0.438819 0.554471 -0.554471 0.438819" mass="0.0236670" diaginertia="1.49533e-05 1.42791e-05 2.18166e-06"/>
+                  <joint name="J6" pos="0 0 0" axis="-0.259868 -0.096705 0.96079"/>
+                  <geom pos="-0.015168 0.285653 -0.010631" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing6"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <body name="LWing1" pos="-0.054 0.066 0.012">
+        <inertial pos="0.0140954 0 0" mass="0.0142420" diaginertia="2.09460e-06 2.09460e-06 2.09460e-06"/>
+        <joint name="J7" pos="0 0 0" axis="-1 0 0"/>
+        <geom pos="0.054 -0.066 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing1"/>
+        
+        <body name="LWing2" pos="0.022 0.006 0">
+          <inertial pos="0.01 0.006 0" mass="0.0236670" diaginertia="4.88338e-06 4.88338e-06 4.88338e-06"/>
+          <joint name="J8" pos="0 0 0" axis="0 -1 0"/>
+          <geom pos="0.032 -0.072 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing2"/>
+          
+          <body name="LWing3" pos="0.02 0.006 -0.006">
+            <inertial pos="-0.00832606 0.0495296 0.000252962" quat="0.184514 0.352206 -0.682609 0.613148" mass="0.0236670" diaginertia="4.28992e-04 4.02883e-04 2.61125e-05"/>
+            <joint name="J9" pos="0 0 0" axis="0 0 -1"/>
+            <geom pos="0.012 -0.078 -0.006" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing3"/>
+            
+            <body name="LWing4" pos="-0.017385 0.112374 0.010924">
+              <inertial pos="0.0159714 0.0443005 -0.00446237" quat="0.680193 0.680193 -0.193229 -0.193229" mass="0.0355005" diaginertia="5.93099e-04 5.63362e-04 2.97498e-05"/>
+              <joint name="J10" pos="0 0 0" axis="-0.272948 0.181163 -0.944817"/>
+              <geom pos="0.029385 -0.190374 -0.016924" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing4"/>
+              
+              <body name="LWing5" pos="0.038473 0.083152 -0.006535">
+                <inertial pos="0.00762387 0.00474471 0.000283107" mass="0.00591675" diaginertia="4.84493e-07 4.84493e-07 4.84493e-07"/>
+                <joint name="J11" pos="0 0 0" axis="-0.46039 -0.885988 0.055365"/>
+                <geom pos="-0.009088 -0.273526 -0.010389" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing5"/>
+                
+                <body name="LWing6" pos="0.00608 0.012127 0.000242">
+                  <inertial pos="0.00535555 0.0427722 -0.0148432" quat="0.554471 0.438819 -0.438819 0.554471" mass="0.0236670" diaginertia="1.49533e-05 1.42791e-05 2.18166e-06"/>
+                  <joint name="J12" pos="0 0 0" axis="0.259868 -0.096705 -0.96079"/>
+                  <geom pos="-0.015168 -0.285653 -0.010631" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing6"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="motor_J1"  joint="J1"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J2"  joint="J2"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J3"  joint="J3"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J4"  joint="J4"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J5"  joint="J5"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J6"  joint="J6"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J7"  joint="J7"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J8"  joint="J8"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J9"  joint="J9"  gear="1" ctrllimited="false"/>
+    <motor name="motor_J10" joint="J10" gear="1" ctrllimited="false"/>
+    <motor name="motor_J11" joint="J11" gear="1" ctrllimited="false"/>
+    <motor name="motor_J12" joint="J12" gear="1" ctrllimited="false"/>
+  </actuator>
+
+  <sensor>
+    <framepos name="imu_pos" objtype="site" objname="imu"/>
+    <framelinvel name="imu_vel" objtype="site" objname="imu"/>
+    <framelinacc name="imu_acc" objtype="site" objname="imu"/>
+    <framequat name="imu_quat" objtype="site" objname="imu"/>
+    <gyro name="imu_gyro" site="imu"/>
+    <frameangacc name="imu_angacc" objtype="site" objname="imu"/>
+  </sensor>
+</mujoco>
