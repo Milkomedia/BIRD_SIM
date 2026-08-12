@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 
 namespace param::coeff {
@@ -1619,35 +1620,33 @@ inline constexpr double S40_CM[176][14] = {
     {-0.2497, -0.247, -0.241, -0.2362, -0.2343, -0.232, -0.23, -0.2287, -0.228, -0.227, -0.2263, -0.2258, -0.2255, -0.2251},
 };
 
-static inline double bilinear_interpolate(const double (&table)[176][14], const double alpha, const double Re) {
-  const double alpha_clamped = std::clamp(alpha, ALPHA_VALUES[0], ALPHA_VALUES[175]);
-  const double Re_clamped = std::clamp(Re, RE_VALUES[0], RE_VALUES[13]);
+static inline double bilinear_interpolate(const double (&table)[176][14], double alpha, double Re) {
+  alpha = std::clamp(alpha, ALPHA_VALUES[0], ALPHA_VALUES[175]);
+  Re = std::clamp(Re, RE_VALUES[0], RE_VALUES[13]);
 
-  std::size_t i = std::min(static_cast<std::size_t>((alpha_clamped - ALPHA_VALUES[0]) * 5.0), std::size_t{174});
-  if (alpha_clamped < ALPHA_VALUES[i]) {--i;}
-  else if (i < 174 && alpha_clamped >= ALPHA_VALUES[i+1]) {++i;}
+  std::size_t i = std::min(static_cast<std::size_t>((alpha - ALPHA_VALUES[0]) * 5.0), std::size_t{174});
+  if (alpha < ALPHA_VALUES[i]) --i;
+  else if (i < 174 && alpha >= ALPHA_VALUES[i+1]) ++i;
 
-  std::size_t j = std::min(static_cast<std::size_t>((Re_clamped - RE_VALUES[0]) * (13.0 / (RE_VALUES[13] - RE_VALUES[0]))), std::size_t{12});
-  if (Re_clamped < RE_VALUES[j]) {--j;}
-  else if (j < 12 && Re_clamped >= RE_VALUES[j+1]) {++j;}
+  std::size_t j = std::min(static_cast<std::size_t>((Re - RE_VALUES[0]) * (13.0 / (RE_VALUES[13] - RE_VALUES[0]))), std::size_t{12});
+  if (Re < RE_VALUES[j]) --j;
+  else if (j < 12 && Re >= RE_VALUES[j+1]) ++j;
 
-  const double k_alpha = (alpha_clamped - ALPHA_VALUES[i]) * 5.0;
-  const double k_Re = (Re_clamped - RE_VALUES[j]) * RE_INV_STEP[j];
+  const double k_alpha = (alpha - ALPHA_VALUES[i]) * 5.0;
+  const double k_Re = (Re - RE_VALUES[j]) * RE_INV_STEP[j];
   const double c0 = table[i][j] + k_alpha * (table[i+1][j] - table[i][j]);
   const double c1 = table[i][j+1] + k_alpha * (table[i+1][j+1] - table[i][j+1]);
   return c0 + k_Re * (c1 - c0);
 }
 
-static inline double get_CD_NACA(const double alpha, const double Re) { return bilinear_interpolate(NACA_CD, alpha, Re); }
-static inline double get_CL_NACA(const double alpha, const double Re) { return bilinear_interpolate(NACA_CL, alpha, Re); }
-static inline double get_CM_NACA(const double alpha, const double Re) { return bilinear_interpolate(NACA_CM, alpha, Re); }
-
-static inline double get_CD_S20(const double alpha, const double Re) { return bilinear_interpolate(S20_CD, alpha, Re); }
-static inline double get_CL_S20(const double alpha, const double Re) { return bilinear_interpolate(S20_CL, alpha, Re); }
-static inline double get_CM_S20(const double alpha, const double Re) { return bilinear_interpolate(S20_CM, alpha, Re); }
-
-static inline double get_CD_S40(const double alpha, const double Re) { return bilinear_interpolate(S40_CD, alpha, Re); }
-static inline double get_CL_S40(const double alpha, const double Re) { return bilinear_interpolate(S40_CL, alpha, Re); }
-static inline double get_CM_S40(const double alpha, const double Re) { return bilinear_interpolate(S40_CM, alpha, Re); }
+static inline double get_CD_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CD, alpha, Re); }
+static inline double get_CL_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CL, alpha, Re); }
+static inline double get_CM_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CM, alpha, Re); }
+static inline double get_CD_S20(double alpha, double Re) { return bilinear_interpolate(S20_CD, alpha, Re); }
+static inline double get_CL_S20(double alpha, double Re) { return bilinear_interpolate(S20_CL, alpha, Re); }
+static inline double get_CM_S20(double alpha, double Re) { return bilinear_interpolate(S20_CM, alpha, Re); }
+static inline double get_CD_S40(double alpha, double Re) { return bilinear_interpolate(S40_CD, alpha, Re); }
+static inline double get_CL_S40(double alpha, double Re) { return bilinear_interpolate(S40_CL, alpha, Re); }
+static inline double get_CM_S40(double alpha, double Re) { return bilinear_interpolate(S40_CM, alpha, Re); }
 
 }  // namespace param::coeff
