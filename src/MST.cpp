@@ -2,6 +2,8 @@
 
 #include "utils.hpp" // State, StripRotation
 
+namespace MST {
+
 static inline void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot) {
   constexpr double EPS2 = 1e-16;
 
@@ -470,3 +472,5 @@ void update_strip(State& s) {
     }
   }
 }
+
+}  // namespace MST

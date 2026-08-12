@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
         FK(s.theta, s.bTj);
 
         s.vel_f = Eigen::Vector3d(-0.5, 0.0, 0.0);
-        update_strip(s);
+        MST::update_strip(s);
       }
 
       // --- Publish a render snapshot at the viewer rate ---
