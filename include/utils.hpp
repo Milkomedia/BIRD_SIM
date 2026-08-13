@@ -1,6 +1,7 @@
 #pragma once
 
 #include "params.hpp"
+#include "MST.hpp"
 
 #include <mujoco/mujoco.h>
 #include <vector>
@@ -12,28 +13,6 @@
 #include <cstdint>
 #include <thread>
 #include <Eigen/Dense>
-
-template <std::size_t N>
-struct StripRotation {
-  std::array<Eigen::Matrix3d, N> bRri{};
-  std::array<double, N> sin_psi{};
-  std::array<double, N> cos_psi{};
-  std::array<double, N> sin_phi{};
-  std::array<double, N> cos_phi{};
-  
-  // Filled by the strip-rotation derivative updater.
-  std::array<double, N> psi_dot{};
-  std::array<double, N> psi_ddot{};
-  std::array<double, N> phi_dot{};
-  std::array<double, N> phi_ddot{};
-  bool initialized = false;
-
-  StripRotation() {
-    for (Eigen::Matrix3d& R : bRri) {R.setIdentity();}
-    cos_psi.fill(1.0);
-    cos_phi.fill(1.0);
-  }
-};
 
 struct State {
   Eigen::Vector3d pos   = Eigen::Vector3d::Zero();       // [m], world NED
@@ -48,25 +27,6 @@ struct State {
   std::array<double, 12> theta_dot{};                    // [rad/s]
   std::array<double, 12> theta_ddot{};                   // [rad/s^2]
   std::array<Eigen::Matrix4d, 12> bTj{};                 // [SE3], wing pose, body FRD
-  std::array<Eigen::Vector3d, 2*param::NH> p_h{};        // [m], humerus strip pos, body FRD
-  std::array<Eigen::Vector3d, 2*param::NR> p_r{};        // [m], radius strip pos, body FRD
-  std::array<Eigen::Vector3d, 2*param::NM> p_m{};        // [m], manus strip pos, body FRD
-  std::array<Eigen::Vector3d, 2*param::NH> v_h{};        // [m/s], humerus strip relative stream vel, strip frame
-  std::array<Eigen::Vector3d, 2*param::NR> v_r{};        // [m/s], radius strip relative stream vel, strip frame
-  std::array<Eigen::Vector3d, 2*param::NM> v_m{};        // [m/s], manus strip relative stream vel, strip frame
-  std::array<Eigen::Vector3d, 2*param::NH> a_h{};        // [m/s^2], humerus strip relative stream accl, strip frame
-  std::array<Eigen::Vector3d, 2*param::NR> a_r{};        // [m/s^2], radius strip relative stream accl, strip frame
-  std::array<Eigen::Vector3d, 2*param::NM> a_m{};        // [m/s^2], manus strip relative stream accl, strip frame
-  std::array<Eigen::Vector3d, 2>           w_h{};        // [rad/s], humerus angular vel, strip frame
-  std::array<Eigen::Vector3d, 2*param::NR> w_r{};        // [rad/s], radius angular vel, strip frame
-  std::array<Eigen::Vector3d, 2>           w_m{};        // [rad/s], manus angular vel, strip frame
-  std::array<Eigen::Vector3d, 2>           wdot_h{};     // [rad/s^2], humerus angular acc, strip frame
-  std::array<Eigen::Vector3d, 2*param::NR> wdot_r{};     // [rad/s^2], radius angular acc, strip frame
-  std::array<Eigen::Vector3d, 2>           wdot_m{};     // [rad/s^2], manus angular acc, strip frame
-  
-  std::array<StripRotation<1>, 2>         humerus_rotation{};
-  std::array<StripRotation<param::NR>, 2> radius_rotation{};
-  std::array<StripRotation<1>, 2>         manus_rotation{};
 };
 
 struct Command {
@@ -91,6 +51,9 @@ struct SimData {
   std::vector<mjtNum> qvel;
   mjtNum time = 0;
   State state{};
+  MST::StripState strip_state{};
+  std::array<Eigen::Vector3d, 6> aero_pos{};   // [m], body FRD
+  std::array<Eigen::Vector3d, 6> aero_force{}; // [N], body FRD
   std::array<double, 12> theta_d{};
 };
 

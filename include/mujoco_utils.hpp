@@ -46,11 +46,14 @@ namespace mj_utils {
 
   inline constexpr double FRAME_AXIS_LENGTH = 0.04;    // [m]
   inline constexpr double FRAME_ARROW_WIDTH = 0.0025;  // [m]
+  inline constexpr double AERO_FORCE_ARROW_SCALE = 0.2000; // [m/N]
+  inline constexpr double AERO_FORCE_ARROW_WIDTH = 0.0035; // [m]
   inline constexpr double STRIP_FRAME_SCALE = 0.5;
   inline constexpr double STRIP_PLATE_THICKNESS = 0.001; // [m]
 
   enum ArrowQuantity : int {
-    ARROW_V = 0,
+    ARROW_NONE = 0,
+    ARROW_V,
     ARROW_A,
     ARROW_W,
     ARROW_WDOT
@@ -68,6 +71,7 @@ namespace mj_utils {
   inline constexpr std::array<float, 4> A_ARROW_COLOR    = {1.00f, 0.40f, 0.10f, 0.50f};
   inline constexpr std::array<float, 4> W_ARROW_COLOR    = {0.85f, 0.20f, 0.95f, 0.50f};
   inline constexpr std::array<float, 4> WDOT_ARROW_COLOR = {1.00f, 0.85f, 0.10f, 0.50f};
+  inline constexpr std::array<float, 4> AERO_FORCE_ARROW_COLOR = {1.00f, 0.00f, 0.00f, 0.90f};
 
   inline void layout_ui(GLFWwindow* window) {
     int framebuffer_width = 0;
@@ -248,7 +252,6 @@ namespace mj_utils {
     for (std::size_t i=0; i<N; ++i) {
       const std::size_t idx = idx0+i;
       const Eigen::Vector3d origin = world_p_body + world_R_body * p[idx];
-      const Eigen::Vector3d velocity_body = Qsi * v[idx];
       const Eigen::Vector3d vector_world = world_R_strip * v[idx];
       append_arrow(origin, vector_world, arrow_scale, arrow_width, color);
     }
@@ -315,7 +318,7 @@ namespace mj_utils {
   inline void append_humerus_strip_frames(const std::array<Eigen::Vector3d, 2*param::NH>& p, const std::size_t idx0, const Eigen::Matrix4d& wTb, const Eigen::Matrix3d& Qsi, const double cos_psi) {
     const Eigen::Matrix3d world_R_body = wTb.block<3, 3>(0, 0);
     const Eigen::Vector3d world_p_body = wTb.block<3, 1>(0, 3);
-    const double width = param::DY_H * cos_psi;
+    const double width = param::DY_H * std::abs(cos_psi);
 
     Eigen::Matrix4d world_T_strip = Eigen::Matrix4d::Identity();
     world_T_strip.block<3, 3>(0, 0) = world_R_body * Qsi;
@@ -492,7 +495,7 @@ namespace mj_utils {
       {mjITEM_SLIDERNUM, "J10", 2, &g_command_theta[9], "-1.5707963268 2.6179938780"},
       {mjITEM_SLIDERNUM, "J11", 2, &g_command_theta[10], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "J12", 2, &g_command_theta[11], "-2.6179938780 1.5707963268"},
-      {mjITEM_SELECT, "arrow", 2, &g_arrow_quantity, "v [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
+      {mjITEM_SELECT, "arrow", 2, &g_arrow_quantity, "none\nv [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
       {mjITEM_END}
     };
     mjui_add(&g_ui, definitions);

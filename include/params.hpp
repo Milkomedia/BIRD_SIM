@@ -13,11 +13,16 @@ namespace param {
   inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(150);
   inline constexpr double SIM_DT_SEC = std::chrono::duration<double>(SIM_DT_US).count();
 
+  // ----- MST -----
+  inline constexpr double AIR_DENSITY = 1.225;               // [kg/m^3]
+  inline constexpr double AIR_KINEMATIC_VISCOSITY = 1.5e-5;  // [m^2/s]
+
+  // ----- wing kinematics -----
   inline constexpr double KIN_GAIN = 2.2;
 
   const std::array<double, 12> INITIAL_DES_THETA{
-    0.12, 0.00, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.12, 0.00, 0.1963495408, -0.7072074129, 0.19, 0.5173155903
+    0.12, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.12, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903
   };
 
   inline constexpr std::size_t NH = 7;  // number of humerus strip frame
@@ -165,19 +170,19 @@ namespace param {
     ).finished()
   };
 
-  // Servo Motor Parameters
+  // ----- Servo Motor Parameters -----
   inline constexpr std::array<double, 6> MOTOR_OHM =              {0.500, 0.500, 0.500, 0.500, 0.500, 0.500};  // [Ω]
   inline constexpr std::array<double, 6> MOTOR_H =                {0.001, 0.001, 0.001, 0.001, 0.001, 0.001};  // [H]
   inline constexpr std::array<double, 6> MOTOR_KT =               {0.050, 0.050, 0.050, 0.050, 0.050, 0.050};  // [Nm/A]
   inline constexpr std::array<double, 6> MOTOR_KE =               {0.050, 0.050, 0.050, 0.050, 0.050, 0.050};  // [V/(rad/s)]
-  inline constexpr std::array<double, 6> MOTOR_REDUCTION_RATIO =  {1.000, 1.000, 1.000, 1.000, 1.000, 1.000};
+  inline constexpr std::array<double, 6> MOTOR_REDUCTION_RATIO =  {9.000, 5.000, 5.000, 5.000, 5.000, 5.000};
   inline constexpr std::array<double, 6> MOTOR_EFFICIENCY =       {0.950, 0.950, 0.950, 0.950, 0.950, 0.950};
   inline constexpr std::array<double, 6> MOTOR_MAX_VOLTAGE =      {24.00, 24.00, 24.00, 24.00, 24.00, 24.00};  // [V]
-  inline constexpr std::array<double, 6> MOTOR_MAX_CURRENT =      {20.00, 20.00, 20.00, 20.00, 20.00, 20.00};  // [A]
-  inline constexpr std::array<double, 6> MOTOR_MAX_TORQUE =       {50.00, 20.00, 20.00, 20.00, 20.00, 20.00};  // [Nm]
+  inline constexpr std::array<double, 6> MOTOR_MAX_CURRENT =      {100.0, 100.0, 100.0, 100.0, 100.0, 100.0};  // [A]
+  inline constexpr std::array<double, 6> MOTOR_MAX_TORQUE =       {50.00, 50.00, 50.00, 50.00, 50.00, 100.00};  // [Nm]
   inline constexpr std::array<double, 6> MOTOR_VISCOUS_FRICTION = {0.002, 0.002, 0.002, 0.002, 0.002, 0.002};  // [Nm/(rad/s)]
-  inline constexpr std::array<double, 6> MOTOR_KP =               {25.00, 5.000, 5.000, 3.000, 1.000, 1.000};  // [Nm/rad]
-  inline constexpr std::array<double, 6> MOTOR_KD =               {2.000, 0.150, 0.150, 0.150, 0.050, 0.050};  // [Nm/(rad/s)]
+  inline constexpr std::array<double, 6> MOTOR_KP =               {500.0, 100.0, 100.0, 100.0, 100.0, 50.00};  // [Nm/rad]
+  inline constexpr std::array<double, 6> MOTOR_KD =               {10.00, 0.500, 0.500, 0.500, 0.500, 0.300};  // [Nm/(rad/s)]
   inline constexpr std::array<double, 6> MOTOR_DT = {SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC}; // [sec]
 
   // world NED -> MuJoCo world FLU

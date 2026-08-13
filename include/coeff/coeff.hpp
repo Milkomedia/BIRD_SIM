@@ -1639,14 +1639,4 @@ static inline double bilinear_interpolate(const double (&table)[176][14], double
   return c0 + k_Re * (c1 - c0);
 }
 
-static inline double get_CD_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CD, alpha, Re); }
-static inline double get_CL_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CL, alpha, Re); }
-static inline double get_CM_NACA(double alpha, double Re) { return bilinear_interpolate(NACA_CM, alpha, Re); }
-static inline double get_CD_S20(double alpha, double Re) { return bilinear_interpolate(S20_CD, alpha, Re); }
-static inline double get_CL_S20(double alpha, double Re) { return bilinear_interpolate(S20_CL, alpha, Re); }
-static inline double get_CM_S20(double alpha, double Re) { return bilinear_interpolate(S20_CM, alpha, Re); }
-static inline double get_CD_S40(double alpha, double Re) { return bilinear_interpolate(S40_CD, alpha, Re); }
-static inline double get_CL_S40(double alpha, double Re) { return bilinear_interpolate(S40_CL, alpha, Re); }
-static inline double get_CM_S40(double alpha, double Re) { return bilinear_interpolate(S40_CM, alpha, Re); }
-
 }  // namespace param::coeff

@@ -1,6 +1,5 @@
 #include "mujoco_utils.hpp"
 #include "params.hpp"
-#include "coeff/coeff.hpp"
 #include "MST.hpp"
 #include "utils.hpp"
 #include "Servo.hpp"
@@ -49,6 +48,10 @@ int main(int argc, char** argv) {
     servo_qpos_address[i] = m->jnt_qposadr[joint_id];
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
   }
+
+  constexpr std::array<const char*, 6> aerodynamic_body_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
+  std::array<int, 6> wing_plate_ids{};
+  for (std::size_t i=0; i<wing_plate_ids.size(); ++i) {wing_plate_ids[i] = mj_name2id(m, mjOBJ_BODY, aerodynamic_body_names[i]);}
 
   const mjtNum* const sensor_pos  = sim_data->sensordata + imu_pos_sensor_adr;
   const mjtNum* const sensor_vel  = sim_data->sensordata + imu_vel_sensor_adr;
@@ -115,6 +118,7 @@ int main(int argc, char** argv) {
     }
     for (std::size_t i=0; i<12; ++i) {servo.emplace_back(m, mj_utils::kActuatorNames[i], motor_parameters[i % motor_parameters.size()]);}
 
+    MST mst{};
     State s{};
     Command cmd{};
     ViewerData viewer_data{};
@@ -122,13 +126,17 @@ int main(int argc, char** argv) {
     std::array<mjtNum, 12> measured_theta_dot{};
     std::vector<mjtNum> snapshot_qpos(static_cast<std::size_t>(m->nq));
     std::vector<mjtNum> snapshot_qvel(static_cast<std::size_t>(m->nv));
+    std::array<Eigen::Vector3d, 6> applied_aero_pos{};
+    std::array<Eigen::Vector3d, 6> applied_aero_force{};
     mjtNum snapshot_time = sim_data->time;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
 
-    // ---------------- [ Simulation loop ] ----------------
+    // =====================================================
+    // ================ [ Simulation loop ] ================
+    // =====================================================
     while (!g_stop.load(std::memory_order_acquire)) {
       next_tick += param::SIM_DT_US;
 
@@ -143,7 +151,9 @@ int main(int argc, char** argv) {
         mj_resetData(m, sim_data);
         mj_forward(m, sim_data);
         for (Actuator::Servo& item : servo) {item.reset();}
-        for (StripRotation<param::NR>& rotation : s.radius_rotation) {rotation.initialized = false;}
+        mst.reset();
+        applied_aero_pos.fill(Eigen::Vector3d::Zero());
+        applied_aero_force.fill(Eigen::Vector3d::Zero());
         handled_reset_epoch = viewer_data.reset_epoch;
       }
 
@@ -154,20 +164,25 @@ int main(int argc, char** argv) {
       // --- ELRS RC parse ---
       if (elrs_enabled && elrs.update(elrs_channels)) {
         constexpr double ELRS_TO_RAD = M_PI / 1638.0;
+        constexpr double ELRS_TO_ONE = 2.0 / 1638.0;
         cmd.theta[0]  = param::INITIAL_DES_THETA[0] - (static_cast<double>(elrs_channels[1]) - 992.0) * ELRS_TO_RAD;
         cmd.theta[1]  = param::INITIAL_DES_THETA[1] - (static_cast<double>(elrs_channels[3]) - 992.0) * (0.25 * ELRS_TO_RAD);
         cmd.theta[2]  = param::INITIAL_DES_THETA[2] - (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
         cmd.theta[3]  = param::INITIAL_DES_THETA[3] + param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        // cmd.theta[4]  = param::INITIAL_DES_THETA[4] + (static_cast<double>(elrs_channels[11]) - 992.0) * ELRS_TO_RAD;
         cmd.theta[4]  = J5_model(cmd.theta[2]);
         cmd.theta[5]  = param::INITIAL_DES_THETA[5] - param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
         cmd.theta[6]  = param::INITIAL_DES_THETA[6] - (static_cast<double>(elrs_channels[1]) - 992.0) * ELRS_TO_RAD;
         cmd.theta[7]  = param::INITIAL_DES_THETA[7] - (static_cast<double>(elrs_channels[3]) - 992.0) * (0.25 * ELRS_TO_RAD);
         cmd.theta[8]  = param::INITIAL_DES_THETA[8] - (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
         cmd.theta[9]  = param::INITIAL_DES_THETA[9] + param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        // cmd.theta[10] = param::INITIAL_DES_THETA[10] + (static_cast<double>(elrs_channels[10]) - 992.0) * ELRS_TO_RAD;
         cmd.theta[10] = J5_model(cmd.theta[8]);
         cmd.theta[11] = param::INITIAL_DES_THETA[11] - param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
+
+        // manual external wind gust
+        const double vel_x = (static_cast<double>(elrs_channels[10]) - 992.0) * ELRS_TO_ONE * 20.0;
+        const double vel_y = (static_cast<double>(elrs_channels[15]) - 992.0) * ELRS_TO_ONE * 10.0;
+        const double vel_z = (static_cast<double>(elrs_channels[11]) - 992.0) * ELRS_TO_ONE * 10.0;
+        s.vel_f = Eigen::Vector3d(vel_x, vel_y, vel_z);
         
         // std::printf("[ELRS] %llu", static_cast<unsigned long long>(elrs.valid_frames()));
         // for (std::size_t i=0; i<elrs_channels.size(); ++i) {std::printf(" %4u", static_cast<unsigned int>(elrs_channels[i]));}
@@ -179,7 +194,8 @@ int main(int argc, char** argv) {
       if (!reset_requested) {
 
         // --- MuJoCo simulation step1 ---
-        mju_zero(sim_data->xfrc_applied, 6 * m->nbody);
+        mju_zero(sim_data->xfrc_applied, 6*m->nbody);
+        mju_zero(sim_data->qfrc_applied, m->nv);
         mjv_applyPerturbPose(m, sim_data, &viewer_data.perturb, viewer_data.paused);
         if (!viewer_data.paused) {mj_step1(m, sim_data);}
 
@@ -194,6 +210,25 @@ int main(int argc, char** argv) {
 
         if (!viewer_data.paused) {
           for (std::size_t i=0; i<12; ++i) {sim_data->ctrl[servo[i].actuatorId()] = static_cast<mjtNum>(servo[i].motor_state.torque);}
+
+          // apply_aerodynamic_loads.
+          // Acceleration-dependent loads computed at t_(k-1) are applied at t_k.
+          const Eigen::Matrix3d GRb = param::NED_TO_FLU * s.R;
+          const Eigen::Vector3d Gpb = param::NED_TO_FLU * s.pos;
+          const std::array<Eigen::Vector3d, 6>& bp = mst.positions();
+          const std::array<Eigen::Vector3d, 6>& bF = mst.forces();
+          const std::array<Eigen::Vector3d, 6>& bT = mst.torques();
+
+          for (std::size_t i=0; i<6; ++i) {
+            const Eigen::Vector3d GF = GRb * bF[i];
+            const Eigen::Vector3d GT = GRb * bT[i];
+            const Eigen::Vector3d Gp = Gpb + GRb * bp[i];
+            const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
+            const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
+            const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
+            mj_applyFT(m, sim_data, force, torque, point, wing_plate_ids[i], sim_data->qfrc_applied);
+          }
+
           for (std::size_t i=0; i<12; ++i) {
             measured_theta[i] = sim_data->qpos[servo_qpos_address[i]];
             measured_theta_dot[i] = sim_data->qvel[servo_qvel_address[i]];
@@ -202,6 +237,8 @@ int main(int argc, char** argv) {
             std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
             std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
             snapshot_time = sim_data->time;
+            applied_aero_pos = mst.positions();
+            applied_aero_force = mst.forces();
           }
           mj_step2(m, sim_data);
         }
@@ -229,6 +266,7 @@ int main(int argc, char** argv) {
       }
 
       { // --- Sensor measuring ---
+        // qpos/qvel were sampled before mj_step2. qacc and acceleration sensors were produced by that same t_k acceleration solve.
         s.pos(0) = static_cast<double>( sensor_pos[0]);
         s.pos(1) = static_cast<double>(-sensor_pos[1]);
         s.pos(2) = static_cast<double>(-sensor_pos[2]);
@@ -251,9 +289,7 @@ int main(int argc, char** argv) {
         }
 
         FK(s.theta, s.bTj);
-
-        s.vel_f = Eigen::Vector3d(-0.5, 0.0, 0.0);
-        MST::update_strip(s);
+        mst.update(s);
       }
 
       // --- Publish a render snapshot at the viewer rate ---
@@ -264,6 +300,9 @@ int main(int argc, char** argv) {
           shared_sim_data.qvel.swap(snapshot_qvel);
           shared_sim_data.time = snapshot_time;
           shared_sim_data.state = s;
+          shared_sim_data.strip_state = mst.copy_strip_state();
+          shared_sim_data.aero_pos = applied_aero_pos;
+          shared_sim_data.aero_force = applied_aero_force;
           shared_sim_data.theta_d = cmd.theta;
         }
       }
@@ -282,6 +321,9 @@ int main(int argc, char** argv) {
   const std::chrono::steady_clock::duration render_period = param::RENDER_DT_US;
   std::uint64_t handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
   State copied_state{};
+  MST::StripState copied_strip_state{};
+  std::array<Eigen::Vector3d, 6> copied_aero_pos{};
+  std::array<Eigen::Vector3d, 6> copied_aero_force{};
 
   while (!glfwWindowShouldClose(window)) {
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -312,6 +354,9 @@ int main(int argc, char** argv) {
       std::copy_n(shared_sim_data.qvel.begin(), shared_sim_data.qvel.size(), render_data->qvel);
       render_data->time = shared_sim_data.time;
       copied_state = shared_sim_data.state;
+      copied_strip_state = shared_sim_data.strip_state;
+      copied_aero_pos = shared_sim_data.aero_pos;
+      copied_aero_force = shared_sim_data.aero_force;
       if (elrs_enabled){for(std::size_t i=0; i<12; ++i){mj_utils::g_command_theta[i] = static_cast<mjtNum>(shared_sim_data.theta_d[i]);}}
     }
     if (elrs_enabled) {mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);}
@@ -320,53 +365,62 @@ int main(int argc, char** argv) {
     mjv_updateScene(m, render_data, &mj_utils::g_option, &mj_utils::g_perturb, &mj_utils::g_camera, mjCAT_ALL, &mj_utils::g_scene);
     mj_utils::highlight_selected_body();
 
-    Eigen::Matrix4d wTb = Eigen::Matrix4d::Identity();
-    wTb.block<3, 3>(0, 0) = param::NED_TO_FLU * copied_state.R;
-    wTb.block<3, 1>(0, 3) = param::NED_TO_FLU * copied_state.pos;
-
-    mj_utils::append_frame(wTb);
-    for (const Eigen::Matrix4d& bTj : copied_state.bTj) {mj_utils::append_frame(wTb * bTj);}
+    // Joint frames
+    Eigen::Matrix4d GTb = Eigen::Matrix4d::Identity();
+    GTb.block<3, 3>(0, 0) = param::NED_TO_FLU * copied_state.R;
+    GTb.block<3, 1>(0, 3) = param::NED_TO_FLU * copied_state.pos;
+    mj_utils::append_frame(GTb);
+    for (const Eigen::Matrix4d& bTj : copied_state.bTj) {mj_utils::append_frame(GTb * bTj);}
 
     { // State arrows and strip frames
-      const Eigen::Matrix3d world_R_body = wTb.block<3, 3>(0, 0);
-      const Eigen::Vector3d world_p_body = wTb.block<3, 1>(0, 3);
+      const Eigen::Matrix3d GRb = GTb.block<3, 3>(0, 0);
+      const Eigen::Vector3d Gpb = GTb.block<3, 1>(0, 3);
       for (std::size_t wing=0; wing<2; ++wing) {
-        const StripRotation<1>& humerus_rotation = copied_state.humerus_rotation[wing];
-        const StripRotation<param::NR>& radius_rotation = copied_state.radius_rotation[wing];
-        const StripRotation<1>& manus_rotation = copied_state.manus_rotation[wing];
+        const MST::StripRotation<1>& humerus_rotation = copied_strip_state.humerus_rotation[wing];
+        const MST::StripRotation<param::NR>& radius_rotation = copied_strip_state.radius_rotation[wing];
+        const MST::StripRotation<1>& manus_rotation = copied_strip_state.manus_rotation[wing];
         const Eigen::Matrix3d& bRhi = humerus_rotation.bRri[0];
         const Eigen::Matrix3d& bRmi = manus_rotation.bRri[0];
 
         switch (mj_utils::g_arrow_quantity) {
+          case mj_utils::ARROW_NONE:
+            break;
+
           case mj_utils::ARROW_A:
-            mj_utils::append_segment_vector<param::NH>(copied_state.p_h, copied_state.a_h, wing*param::NH, world_R_body, world_p_body, bRhi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_state.p_r, copied_state.a_r, wing*param::NR, world_R_body, world_p_body, radius_rotation.bRri, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_state.p_m, copied_state.a_m, wing*param::NM, world_R_body, world_p_body, bRmi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.a_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.a_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.a_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
             break;
 
           case mj_utils::ARROW_W:
-            mj_utils::append_segment_vector<param::NH>(copied_state.p_h, copied_state.w_h[wing], wing*param::NH, world_R_body, world_p_body, bRhi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_state.p_r, copied_state.w_r, wing*param::NR, world_R_body, world_p_body, radius_rotation.bRri, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_state.p_m, copied_state.w_m[wing], wing*param::NM, world_R_body, world_p_body, bRmi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.w_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.w_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.w_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
             break;
 
           case mj_utils::ARROW_WDOT:
-            mj_utils::append_segment_vector<param::NH>(copied_state.p_h, copied_state.wdot_h[wing], wing*param::NH, world_R_body, world_p_body, bRhi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_state.p_r, copied_state.wdot_r, wing*param::NR, world_R_body, world_p_body, radius_rotation.bRri, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_state.p_m, copied_state.wdot_m[wing], wing*param::NM, world_R_body, world_p_body, bRmi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.wdot_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.wdot_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.wdot_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
             break;
 
           case mj_utils::ARROW_V:
           default:
-            mj_utils::append_segment_vector<param::NH>(copied_state.p_h, copied_state.v_h, wing*param::NH, world_R_body, world_p_body, bRhi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_state.p_r, copied_state.v_r, wing*param::NR, world_R_body, world_p_body, radius_rotation.bRri, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_state.p_m, copied_state.v_m, wing*param::NM, world_R_body, world_p_body, bRmi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.v_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.v_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.v_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
             break;
         }
 
-        mj_utils::append_humerus_strip_frames(copied_state.p_h, wing*param::NH, wTb, bRhi, humerus_rotation.cos_psi[0]);
-        mj_utils::append_radius_strip_frames(copied_state.p_r, wing*param::NR, wTb, radius_rotation.bRri, radius_rotation.cos_psi);
-        mj_utils::append_manus_strip_frames(copied_state.p_m, wing*param::NM, wTb, bRmi, manus_rotation.cos_psi[0]);
+        mj_utils::append_humerus_strip_frames(copied_strip_state.p_h, wing*param::NH, GTb, bRhi, humerus_rotation.cos_psi[0]);
+        mj_utils::append_radius_strip_frames(copied_strip_state.p_r, wing*param::NR, GTb, radius_rotation.bRri, radius_rotation.cos_psi);
+        mj_utils::append_manus_strip_frames(copied_strip_state.p_m, wing*param::NM, GTb, bRmi, manus_rotation.cos_psi[0]);
+
+        for (std::size_t i=0; i<6; ++i) {
+          const Eigen::Vector3d origin = Gpb + GRb*copied_aero_pos[i];
+          const Eigen::Vector3d force = GRb*copied_aero_force[i];
+          mj_utils::append_arrow(origin, force, mj_utils::AERO_FORCE_ARROW_SCALE, mj_utils::AERO_FORCE_ARROW_WIDTH, mj_utils::AERO_FORCE_ARROW_COLOR);
+        }
       }
     }
 

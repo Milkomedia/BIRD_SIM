@@ -1,10 +1,21 @@
 #include "MST.hpp"
 
-#include "utils.hpp" // State, StripRotation
+#include "coeff/coeff.hpp"
+#include "utils.hpp" // State
 
-namespace MST {
+#include <cmath>
 
-static inline void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot) {
+MST::MST() {reset();}
+
+void MST::reset() {
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+  strip_state_.reset();
+  aero_pos_.fill(zero);
+  aero_force_.fill(zero);
+  aero_torque_.fill(zero);
+}
+
+void MST::update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot) {
   constexpr double EPS2 = 1e-16;
 
   const double r2 = x*x + y*y;
@@ -16,7 +27,7 @@ static inline void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, 
   angle_ddot = (x*y_ddot - y*x_ddot)*inv_r2 - 2.0*q*(x*x_dot + y*y_dot)*inv_r2*inv_r2;
 }
 
-static inline void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x) {
+void MST::update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x) {
   const Eigen::Vector3d b_omega_rel = b_omega_x - b_omega_0;
   const Eigen::Vector3d omega_rel_0 = bR0.transpose() * b_omega_rel;
   const Eigen::Vector3d omega_dot_rel_0 = bR0.transpose() * (b_omega_dot_x - b_omega_dot_0 - b_omega_0.cross(b_omega_rel));
@@ -25,7 +36,7 @@ static inline void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eig
   x_ddot_0 = omega_dot_rel_0.cross(x_0) + omega_rel_0.cross(x_dot_0);
 }
 
-static inline void update_Rz_psi(Eigen::Matrix3d& bRsi, double& sin_psi, double& cos_psi, double& psi_dot, double& psi_ddot, const Eigen::Vector3d& n, const Eigen::Matrix3d& bRs0, const Eigen::Vector3d& b_omega_n, const Eigen::Vector3d& b_omega_dot_n, const Eigen::Vector3d& b_omega_s0, const Eigen::Vector3d& b_omega_dot_s0) {
+void MST::update_Rz_psi(Eigen::Matrix3d& bRsi, double& sin_psi, double& cos_psi, double& psi_dot, double& psi_ddot, const Eigen::Vector3d& n, const Eigen::Matrix3d& bRs0, const Eigen::Vector3d& b_omega_n, const Eigen::Vector3d& b_omega_dot_n, const Eigen::Vector3d& b_omega_s0, const Eigen::Vector3d& b_omega_dot_s0) {
   constexpr double EPS2 = 1e-16;
 
   const Eigen::Vector3d n_s0 = bRs0.transpose() * n;
@@ -55,7 +66,7 @@ static inline void update_Rz_psi(Eigen::Matrix3d& bRsi, double& sin_psi, double&
   bRsi.col(2) = bRs0.col(2);
 }
 
-static inline void update_Ryphi_Rzpsi(Eigen::Matrix3d& bRri, double& sin_psi, double& cos_psi, double& sin_phi, double& cos_phi, double& psi_dot, double& psi_ddot, double& phi_dot, double& phi_ddot, const Eigen::Vector3d& xi, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& b_omega_xi, const Eigen::Vector3d& b_omega_dot_xi, const Eigen::Vector3d& b_omega_r0, const Eigen::Vector3d& b_omega_dot_r0, const bool initialized) {
+void MST::update_Ryphi_Rzpsi(Eigen::Matrix3d& bRri, double& sin_psi, double& cos_psi, double& sin_phi, double& cos_phi, double& psi_dot, double& psi_ddot, double& phi_dot, double& phi_ddot, const Eigen::Vector3d& xi, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& b_omega_xi, const Eigen::Vector3d& b_omega_dot_xi, const Eigen::Vector3d& b_omega_r0, const Eigen::Vector3d& b_omega_dot_r0, const bool initialized) {
   constexpr double EPS2 = 1e-16;
 
   const double x = bRr0.col(0).dot(xi);
@@ -101,7 +112,7 @@ static inline void update_Ryphi_Rzpsi(Eigen::Matrix3d& bRri, double& sin_psi, do
   bRri.col(1) = bRri.col(2).cross(bRri.col(0));
 }
 
-static inline void update_radius_strip_rotation(StripRotation<param::NR>& rotation, const Eigen::Vector3d& n, const Eigen::Matrix3d& bRhi, const Eigen::Matrix3d& bRmi, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& b_omega_n, const Eigen::Vector3d& b_omega_dot_n, const Eigen::Vector3d& b_omega_hi, const Eigen::Vector3d& b_omega_dot_hi, const Eigen::Vector3d& b_omega_mi, const Eigen::Vector3d& b_omega_dot_mi, const Eigen::Vector3d& b_omega_r0, const Eigen::Vector3d& b_omega_dot_r0) {
+void MST::update_radius_strip_rotation(StripRotation<param::NR>& rotation, const Eigen::Vector3d& n, const Eigen::Matrix3d& bRhi, const Eigen::Matrix3d& bRmi, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& b_omega_n, const Eigen::Vector3d& b_omega_dot_n, const Eigen::Vector3d& b_omega_hi, const Eigen::Vector3d& b_omega_dot_hi, const Eigen::Vector3d& b_omega_mi, const Eigen::Vector3d& b_omega_dot_mi, const Eigen::Vector3d& b_omega_r0, const Eigen::Vector3d& b_omega_dot_r0) {
   constexpr std::size_t k = param::NR-1;
   constexpr double inv_k = 1.0 / static_cast<double>(k);
   constexpr double EPS2 = 1e-16;
@@ -230,7 +241,11 @@ static inline void update_radius_strip_rotation(StripRotation<param::NR>& rotati
   rotation.initialized = true;
 }
 
-static inline void update_humerus_stream_p_v_a(std::array<Eigen::Vector3d, 2*param::NH>& p, std::array<Eigen::Vector3d, 2*param::NH>& v, std::array<Eigen::Vector3d, 2*param::NH>& a, const std::size_t idx0, const Eigen::Matrix3d& bRh0, const Eigen::Vector3d& bph0, const Eigen::Matrix3d& bRhi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvh0, const Eigen::Vector3d& bah0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+
+void MST::update_humerus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRh0, const Eigen::Vector3d& bph0, const Eigen::Matrix3d& bRhi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvh0, const Eigen::Vector3d& bah0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+  std::array<Eigen::Vector3d, 2*param::NH>& p = strip_state_.p_h;
+  std::array<Eigen::Vector3d, 2*param::NH>& v = strip_state_.v_h;
+  std::array<Eigen::Vector3d, 2*param::NH>& a = strip_state_.a_h;
   const Eigen::Vector3d drho = dy * bRh0.col(1);
   const Eigen::Vector3d dv_local = bRhi.transpose() * (-omega.cross(drho));
   const Eigen::Vector3d da_local = bRhi.transpose() * (-omega_dot.cross(drho) - omega*omega.dot(drho) + omega2*drho);
@@ -245,7 +260,10 @@ static inline void update_humerus_stream_p_v_a(std::array<Eigen::Vector3d, 2*par
   }
 }
 
-static inline void update_radius_stream_p_v_a(std::array<Eigen::Vector3d, 2*param::NR>& p, std::array<Eigen::Vector3d, 2*param::NR>& v, std::array<Eigen::Vector3d, 2*param::NR>& a, const std::size_t idx0, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& bpr0, const std::array<Eigen::Matrix3d, param::NR>& bRri, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvr0, const Eigen::Vector3d& bar0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+void MST::update_radius_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRr0, const Eigen::Vector3d& bpr0, const std::array<Eigen::Matrix3d, param::NR>& bRri, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvr0, const Eigen::Vector3d& bar0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+  std::array<Eigen::Vector3d, 2*param::NR>& p = strip_state_.p_r;
+  std::array<Eigen::Vector3d, 2*param::NR>& v = strip_state_.v_r;
+  std::array<Eigen::Vector3d, 2*param::NR>& a = strip_state_.a_r;
   const Eigen::Vector3d drho = dy * bRr0.col(1);
   const Eigen::Vector3d dv_body = -omega.cross(drho);
   const Eigen::Vector3d da_body = -omega_dot.cross(drho) - omega*omega.dot(drho) + omega2*drho;
@@ -265,7 +283,10 @@ static inline void update_radius_stream_p_v_a(std::array<Eigen::Vector3d, 2*para
   }
 }
 
-static inline void update_manus_stream_p_v_a(std::array<Eigen::Vector3d, 2*param::NM>& p, std::array<Eigen::Vector3d, 2*param::NM>& v, std::array<Eigen::Vector3d, 2*param::NM>& a, const std::size_t idx0, const Eigen::Matrix3d& bRm0, const Eigen::Vector3d& bpm0, const Eigen::Matrix3d& bRmi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvm0, const Eigen::Vector3d& bam0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+void MST::update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRm0, const Eigen::Vector3d& bpm0, const Eigen::Matrix3d& bRmi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvm0, const Eigen::Vector3d& bam0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy) {
+  std::array<Eigen::Vector3d, 2*param::NM>& p = strip_state_.p_m;
+  std::array<Eigen::Vector3d, 2*param::NM>& v = strip_state_.v_m;
+  std::array<Eigen::Vector3d, 2*param::NM>& a = strip_state_.a_m;
   constexpr double dx = param::D_LPRI / (static_cast<double>(param::NM - param::DECLINE_IDX));
 
   const Eigen::Vector3d drho_y  = dy * bRm0.col(1);
@@ -291,13 +312,72 @@ static inline void update_manus_stream_p_v_a(std::array<Eigen::Vector3d, 2*param
   }
 }
 
-static inline void update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_dot_i, const Eigen::Matrix3d& bRsi, const Eigen::Vector3d& b_omega_b_theta, const Eigen::Vector3d& b_omega_dot_b_theta, const Eigen::Vector3d& omega_phi_psi, const Eigen::Vector3d& omega_dot_phi_psi) {
+void MST::update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_dot_i, const Eigen::Matrix3d& bRsi, const Eigen::Vector3d& b_omega_b_theta, const Eigen::Vector3d& b_omega_dot_b_theta, const Eigen::Vector3d& omega_phi_psi, const Eigen::Vector3d& omega_dot_phi_psi) {
   const Eigen::Vector3d omega_b_theta = bRsi.transpose() * b_omega_b_theta;
   omega_i = omega_b_theta + omega_phi_psi;
   omega_dot_i = bRsi.transpose() * b_omega_dot_b_theta + omega_b_theta.cross(omega_phi_psi) + omega_dot_phi_psi;
 }
 
-void update_strip(State& s) {
+
+template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], std::size_t N, typename RotationAt, typename OmegaYAt, typename ChordAt, typename WidthAt>
+void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::size_t idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaYAt&& omega_y_at, ChordAt&& chord_at, WidthAt&& width_at) {
+  constexpr double RAD_TO_DEG = 57.29577951308232;
+
+  Eigen::Vector3d force_accum = Eigen::Vector3d::Zero(); // body FRD
+  Eigen::Vector3d moment_accum = Eigen::Vector3d::Zero(); // body FRD
+  Eigen::Vector3d weighted_pos = Eigen::Vector3d::Zero(); // body FRD
+  double weight = 0.0;
+
+  // calculation for each strip
+  for (std::size_t i=0; i<N; ++i) {
+    const std::size_t idx = idx0+i;
+    const double c = chord_at(i);
+    const double vx = v[idx].x();
+    const double vz = v[idx].z() + 0.25*c*omega_y_at(i);
+    const double dy = width_at(i);
+    const double U2 = vx*vx + vz*vz;
+    if (U2 <= 1e-12 || c <= 0.0 || dy <= 0.0) {continue;}
+
+    const Eigen::Matrix3d& bRsi = rotation_at(i);
+    Eigen::Vector3d F = Eigen::Vector3d::Zero();
+
+    const double U = std::sqrt(U2);
+    const double inv_U = 1.0 / U;
+ 
+    const double alpha = std::atan2(vz, vx);
+    const double alpha_deg = alpha * RAD_TO_DEG;
+    const double Re = U * c / param::AIR_KINEMATIC_VISCOSITY;
+    const double Cd = param::coeff::bilinear_interpolate(CD, alpha_deg, Re);
+    const double Cl = param::coeff::bilinear_interpolate(CL, alpha_deg, Re);
+    const double Cm = param::coeff::bilinear_interpolate(CM, alpha_deg, Re);
+
+    const double qS = 0.5 * param::AIR_DENSITY * U2 * c * dy;
+    const double k_f = qS * inv_U;
+    F(0) = k_f * (Cd*vx - Cl*vz);
+    F(2) = k_f * (Cd*vz + Cl*vx);
+    const double My = qS * c * Cm;
+
+    // Add each strip effect
+    const Eigen::Vector3d aerodynamic_center = p[idx] + 0.25 * c * bRsi.col(0);
+    const Eigen::Vector3d bF = bRsi * F;
+
+    force_accum += bF;
+    moment_accum += aerodynamic_center.cross(bF) + My * bRsi.col(1);
+    weighted_pos += qS * aerodynamic_center;
+    weight += qS;
+  }
+
+  Eigen::Vector3d reference_pos = Eigen::Vector3d::Zero();
+  if (weight > 0.0) {reference_pos = weighted_pos / weight;}
+  
+  // Apply the equivalent wrench at the qS-weighted quarter-chord point.
+  // This remains bounded when strip forces cancel near stroke reversal.
+  aero_pos_[load_idx] = reference_pos;
+  aero_force_[load_idx] = force_accum;
+  aero_torque_[load_idx] = moment_accum - reference_pos.cross(force_accum);
+}
+
+void MST::update(const State& s) {
   const Eigen::Matrix3d Rt = s.R.transpose();
   const Eigen::Vector3d RtVrel = Rt * (s.vel_f - s.vel);
   const Eigen::Vector3d RtArel = -(Rt * s.acc); // Steady freestream: acc_f = 0.
@@ -381,9 +461,9 @@ void update_strip(State& s) {
       baj_prev = baj;
     }
 
-    StripRotation<1>& humerus_rotation = s.humerus_rotation[wing];
-    StripRotation<param::NR>& radius_rotation = s.radius_rotation[wing];
-    StripRotation<1>& manus_rotation = s.manus_rotation[wing];
+    StripRotation<1>& humerus_rotation = strip_state_.humerus_rotation[wing];
+    StripRotation<param::NR>& radius_rotation = strip_state_.radius_rotation[wing];
+    StripRotation<1>& manus_rotation = strip_state_.manus_rotation[wing];
 
     Eigen::Matrix3d& bRhi = humerus_rotation.bRri[0];
     Eigen::Matrix3d& bRmi = manus_rotation.bRri[0];
@@ -404,7 +484,7 @@ void update_strip(State& s) {
         update_Rz_psi(bRhi, humerus_rotation.sin_psi[0], humerus_rotation.cos_psi[0], humerus_rotation.psi_dot[0], humerus_rotation.psi_ddot[0], bRsec_y, bRh0, omega_theta_sec, omega_dot_theta_sec, omega_theta_h, omega_dot_theta_h);
         humerus_rotation.sin_phi[0] = 0.0;
         humerus_rotation.cos_phi[0] = 1.0;
-        update_humerus_stream_p_v_a(s.p_h, s.v_h, s.a_h, wing*param::NH, bRh0, bph0, bRhi, RtVrel, RtArel, bvh0, bah0, b_omega_b_theta_h, b_omega_dot_b_theta_h, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_H);
+        update_humerus_stream_p_v_a(wing*param::NH, bRh0, bph0, bRhi, RtVrel, RtArel, bvh0, bah0, b_omega_b_theta_h, b_omega_dot_b_theta_h, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_H);
       }
       
       { // Manus
@@ -420,7 +500,7 @@ void update_strip(State& s) {
         update_Rz_psi(bRmi, manus_rotation.sin_psi[0], manus_rotation.cos_psi[0], manus_rotation.psi_dot[0], manus_rotation.psi_ddot[0], bRsec_y, bRm0, omega_theta_sec, omega_dot_theta_sec, omega_theta_m, omega_dot_theta_m);
         manus_rotation.sin_phi[0] = 0.0;
         manus_rotation.cos_phi[0] = 1.0;
-        update_manus_stream_p_v_a(s.p_m, s.v_m, s.a_m, wing*param::NM, bRm0, bpm0, bRmi, RtVrel, RtArel, bvm0, bam0, b_omega_b_theta_m, b_omega_dot_b_theta_m, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_M);
+        update_manus_stream_p_v_a(wing*param::NM, bRm0, bpm0, bRmi, RtVrel, RtArel, bvm0, bam0, b_omega_b_theta_m, b_omega_dot_b_theta_m, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_M);
       }
 
       { // Radius
@@ -438,7 +518,7 @@ void update_strip(State& s) {
         const Eigen::Vector3d b_omega_dot_hi = omega_dot_theta_h + humerus_rotation.psi_ddot[0]*bRhi.col(2) + humerus_rotation.psi_dot[0]*omega_theta_h.cross(bRhi.col(2));
         const Eigen::Vector3d b_omega_dot_mi = omega_dot_theta_m + manus_rotation.psi_ddot[0]*bRmi.col(2) + manus_rotation.psi_dot[0]*omega_theta_m.cross(bRmi.col(2));
         update_radius_strip_rotation(radius_rotation, bRsec_y, bRhi, bRmi, bRr0, omega_theta_sec, omega_dot_theta_sec, b_omega_hi, b_omega_dot_hi, b_omega_mi, b_omega_dot_mi, omega_theta_r, omega_dot_theta_r);
-        update_radius_stream_p_v_a(s.p_r, s.v_r, s.a_r, wing*param::NR, bRr0, bpr0, radius_rotation.bRri, RtVrel, RtArel, bvr0, bar0, b_omega_b_theta_r, b_omega_dot_b_theta_r, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_R);
+        update_radius_stream_p_v_a(wing*param::NR, bRr0, bpr0, radius_rotation.bRri, RtVrel, RtArel, bvr0, bar0, b_omega_b_theta_r, b_omega_dot_b_theta_r, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_R);
       }
     }
 
@@ -446,12 +526,12 @@ void update_strip(State& s) {
       // Humerus
       const Eigen::Vector3d omega_phi_psi_h(0.0, 0.0, humerus_rotation.psi_dot[0]);
       const Eigen::Vector3d omega_dot_phi_psi_h(0.0, 0.0, humerus_rotation.psi_ddot[0]);
-      update_strip_w_wdot(s.w_h[wing], s.wdot_h[wing], bRhi, b_omega_b_theta_h, b_omega_dot_b_theta_h, omega_phi_psi_h, omega_dot_phi_psi_h);
+      update_strip_w_wdot(strip_state_.w_h[wing], strip_state_.wdot_h[wing], bRhi, b_omega_b_theta_h, b_omega_dot_b_theta_h, omega_phi_psi_h, omega_dot_phi_psi_h);
 
       // Manus
       const Eigen::Vector3d omega_phi_psi_m(0.0, 0.0, manus_rotation.psi_dot[0]);
       const Eigen::Vector3d omega_dot_phi_psi_m(0.0, 0.0, manus_rotation.psi_ddot[0]);
-      update_strip_w_wdot(s.w_m[wing], s.wdot_m[wing], bRmi, b_omega_b_theta_m, b_omega_dot_b_theta_m, omega_phi_psi_m, omega_dot_phi_psi_m);
+      update_strip_w_wdot(strip_state_.w_m[wing], strip_state_.wdot_m[wing], bRmi, b_omega_b_theta_m, b_omega_dot_b_theta_m, omega_phi_psi_m, omega_dot_phi_psi_m);
 
       // Radius
       const std::size_t idx0 = wing*param::NR;
@@ -467,10 +547,36 @@ void update_strip(State& s) {
         const Eigen::Vector3d omega_phi_psi(phi_dot*sin_psi, phi_dot*cos_psi, psi_dot);
         const Eigen::Vector3d omega_dot_phi_psi(phi_ddot*sin_psi + phi_dot_psi_dot*cos_psi, phi_ddot*cos_psi - phi_dot_psi_dot*sin_psi, radius_rotation.psi_ddot[i]);
 
-        update_strip_w_wdot(s.w_r[idx0+i], s.wdot_r[idx0+i], radius_rotation.bRri[i], b_omega_b_theta_r, b_omega_dot_b_theta_r, omega_phi_psi, omega_dot_phi_psi);
+        update_strip_w_wdot(strip_state_.w_r[idx0+i], strip_state_.wdot_r[idx0+i], radius_rotation.bRri[i], b_omega_b_theta_r, b_omega_dot_b_theta_r, omega_phi_psi, omega_dot_phi_psi);
       }
+    }
+        
+    { // Update aerodynamic loads
+      const std::size_t load_idx0 = 3*wing;
+
+      update_segment_aerodynamics<param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM, param::NH>(
+        strip_state_.p_h, strip_state_.v_h, wing*param::NH, load_idx0,
+        [&bRhi](const std::size_t) -> const Eigen::Matrix3d& {return bRhi;},
+        [this, wing](const std::size_t) {return strip_state_.w_h[wing].y();},
+        [](const std::size_t i) {return param::L_ROOT + param::DL_H*static_cast<double>(i);},
+        [&humerus_rotation](const std::size_t i) {return param::DY_H*std::abs(humerus_rotation.cos_psi[0]);}
+      );
+
+      update_segment_aerodynamics<param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM, param::NR>(
+        strip_state_.p_r, strip_state_.v_r, wing*param::NR, load_idx0+1,
+        [&radius_rotation](const std::size_t i) -> const Eigen::Matrix3d& {return radius_rotation.bRri[i];},
+        [this, wing](const std::size_t i) {return strip_state_.w_r[wing*param::NR+i].y();},
+        [](const std::size_t i) {return param::L_TRI + param::DL_R*static_cast<double>(i);},
+        [&radius_rotation](const std::size_t i) {return param::DY_R*std::abs(radius_rotation.cos_psi[i]);}
+      );
+
+      update_segment_aerodynamics<param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM, param::NM>(
+        strip_state_.p_m, strip_state_.v_m, wing*param::NM, load_idx0+2,
+        [&bRmi](const std::size_t) -> const Eigen::Matrix3d& {return bRmi;},
+        [this, wing](const std::size_t) {return strip_state_.w_m[wing].y();},
+        [](const std::size_t i) {return i < param::DECLINE_IDX ? param::L_SEC + param::DL_M1*static_cast<double>(i) : param::L_MPRI + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX);},
+        [&manus_rotation](const std::size_t i) {return param::DY_M*std::abs(manus_rotation.cos_psi[0]);}
+      );
     }
   }
 }
-
-}  // namespace MST
