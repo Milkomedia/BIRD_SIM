@@ -15,6 +15,7 @@
 #include <array>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -49,9 +50,9 @@ int main(int argc, char** argv) {
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
   }
 
-  constexpr std::array<const char*, 6> aerodynamic_body_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
+  constexpr std::array<const char*, 6> wing_plate_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
   std::array<int, 6> wing_plate_ids{};
-  for (std::size_t i=0; i<wing_plate_ids.size(); ++i) {wing_plate_ids[i] = mj_name2id(m, mjOBJ_BODY, aerodynamic_body_names[i]);}
+  for (std::size_t i=0; i<wing_plate_ids.size(); ++i) {wing_plate_ids[i] = mj_name2id(m, mjOBJ_BODY, wing_plate_names[i]);}
 
   const mjtNum* const sensor_pos  = sim_data->sensordata + imu_pos_sensor_adr;
   const mjtNum* const sensor_vel  = sim_data->sensordata + imu_vel_sensor_adr;
@@ -122,10 +123,10 @@ int main(int argc, char** argv) {
     State s{};
     Command cmd{};
     ViewerData viewer_data{};
-    std::array<mjtNum, 12> measured_theta{};
-    std::array<mjtNum, 12> measured_theta_dot{};
     std::vector<mjtNum> snapshot_qpos(static_cast<std::size_t>(m->nq));
     std::vector<mjtNum> snapshot_qvel(static_cast<std::size_t>(m->nv));
+    std::vector<mjtNum> added_mass_jac(6*static_cast<std::size_t>(m->nv));
+    std::vector<mjtNum> added_mass_inertia_jac(6*static_cast<std::size_t>(m->nv));
     std::array<Eigen::Vector3d, 6> applied_aero_pos{};
     std::array<Eigen::Vector3d, 6> applied_aero_force{};
     mjtNum snapshot_time = sim_data->time;
@@ -211,28 +212,48 @@ int main(int argc, char** argv) {
         if (!viewer_data.paused) {
           for (std::size_t i=0; i<12; ++i) {sim_data->ctrl[servo[i].actuatorId()] = static_cast<mjtNum>(servo[i].motor_state.torque);}
 
-          // apply_aerodynamic_loads.
-          // Acceleration-dependent loads computed at t_(k-1) are applied at t_k.
-          const Eigen::Matrix3d GRb = param::NED_TO_FLU * s.R;
-          const Eigen::Vector3d Gpb = param::NED_TO_FLU * s.pos;
+          { // --- Position/velocity state at t_k ---
+            s.pos(0) = static_cast<double>( sensor_pos[0]);
+            s.pos(1) = static_cast<double>(-sensor_pos[1]);
+            s.pos(2) = static_cast<double>(-sensor_pos[2]);
+            s.vel(0) = static_cast<double>( sensor_vel[0]);
+            s.vel(1) = static_cast<double>(-sensor_vel[1]);
+            s.vel(2) = static_cast<double>(-sensor_vel[2]);
+            s.w(0) = static_cast<double>( sensor_gyro[0]);
+            s.w(1) = static_cast<double>(-sensor_gyro[1]);
+            s.w(2) = static_cast<double>(-sensor_gyro[2]);
+            s.R = quat_to_R(sensor_quat);
+
+            for (std::size_t i=0; i<12; ++i) {
+              s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
+              s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
+            }
+
+            FK(s.theta, s.bTj);
+            mst.update_dynamics(s);
+          }
+
+          const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
+          const Eigen::Vector3d Gpb_FLU = param::NED_TO_FLU * s.pos;
+
+          // Transfer MST's current added inertia to MuJoCo's generalized mass.
+          add_spatial_inertias(m, sim_data, mst.added_mass_positions(), mst.added_mass_matrices(), wing_plate_ids, GRb_FLU, Gpb_FLU, added_mass_jac.data(), added_mass_inertia_jac.data());
+
+          // Apply current t_k aerodynamic wrenches.
           const std::array<Eigen::Vector3d, 6>& bp = mst.positions();
           const std::array<Eigen::Vector3d, 6>& bF = mst.forces();
           const std::array<Eigen::Vector3d, 6>& bT = mst.torques();
 
           for (std::size_t i=0; i<6; ++i) {
-            const Eigen::Vector3d GF = GRb * bF[i];
-            const Eigen::Vector3d GT = GRb * bT[i];
-            const Eigen::Vector3d Gp = Gpb + GRb * bp[i];
+            const Eigen::Vector3d GF = GRb_FLU * bF[i];
+            const Eigen::Vector3d GT = GRb_FLU * bT[i];
+            const Eigen::Vector3d Gp = Gpb_FLU + GRb_FLU * bp[i];
             const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
             const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
             const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
             mj_applyFT(m, sim_data, force, torque, point, wing_plate_ids[i], sim_data->qfrc_applied);
           }
 
-          for (std::size_t i=0; i<12; ++i) {
-            measured_theta[i] = sim_data->qpos[servo_qpos_address[i]];
-            measured_theta_dot[i] = sim_data->qvel[servo_qvel_address[i]];
-          }
           if (snapshot_due) {
             std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
             std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
@@ -240,33 +261,24 @@ int main(int argc, char** argv) {
             applied_aero_pos = mst.positions();
             applied_aero_force = mst.forces();
           }
+
           mj_step2(m, sim_data);
+
+          { // --- Acceleration state solved at t_k ---
+            s.acc(0) = static_cast<double>( sensor_acc[0]);
+            s.acc(1) = static_cast<double>(-sensor_acc[1]);
+            s.acc(2) = static_cast<double>(-sensor_acc[2]);
+            s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
+            for (std::size_t i=0; i<12; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
+            if (snapshot_due) {mst.update_visualization(s);}
+          }
         }
       }
-      else { // reset requested
-        for (std::size_t i=0; i<12; ++i) {
-          measured_theta[i] = sim_data->qpos[servo_qpos_address[i]];
-          measured_theta_dot[i] = sim_data->qvel[servo_qvel_address[i]];
-        }
+      if (snapshot_due && (reset_requested || viewer_data.paused)) {
         std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
         std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
         snapshot_time = sim_data->time;
-      }
-
-      if (viewer_data.paused && !reset_requested) {
-        for (std::size_t i=0; i<12; ++i) {
-          measured_theta[i] = sim_data->qpos[servo_qpos_address[i]];
-          measured_theta_dot[i] = sim_data->qvel[servo_qvel_address[i]];
-        }
-        if (snapshot_due) {
-          std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
-          std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
-          snapshot_time = sim_data->time;
-        }
-      }
-
-      { // --- Sensor measuring ---
-        // qpos/qvel were sampled before mj_step2. qacc and acceleration sensors were produced by that same t_k acceleration solve.
+      
         s.pos(0) = static_cast<double>( sensor_pos[0]);
         s.pos(1) = static_cast<double>(-sensor_pos[1]);
         s.pos(2) = static_cast<double>(-sensor_pos[2]);
@@ -283,13 +295,13 @@ int main(int argc, char** argv) {
         s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
 
         for (std::size_t i=0; i<12; ++i) {
-          s.theta[i] = static_cast<double>(measured_theta[i]);
-          s.theta_dot[i] = static_cast<double>(measured_theta_dot[i]);
+          s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
+          s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
           s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);
         }
 
         FK(s.theta, s.bTj);
-        mst.update(s);
+        mst.update_visualization(s);
       }
 
       // --- Publish a render snapshot at the viewer rate ---

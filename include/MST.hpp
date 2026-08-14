@@ -76,11 +76,14 @@ public:
 
   MST();
   void reset();
-  void update(const State& s);
+  void update_dynamics(const State& s) {update(s, true, true);}
+  void update_visualization(const State& s) {update(s, false, false);}
 
   const std::array<Eigen::Vector3d, 6>& positions() const noexcept {return aero_pos_;}
   const std::array<Eigen::Vector3d, 6>& forces() const noexcept {return aero_force_;}
   const std::array<Eigen::Vector3d, 6>& torques() const noexcept {return aero_torque_;}
+  const std::array<Eigen::Vector3d, 6>& added_mass_positions() const noexcept {return added_mass_pos_;}
+  const std::array<Eigen::Matrix<double, 6, 6>, 6>& added_mass_matrices() const noexcept {return added_mass_matrix_;}
   const StripState& copy_strip_state() const noexcept {return strip_state_;}
 
 private:
@@ -88,6 +91,10 @@ private:
   std::array<Eigen::Vector3d, 6> aero_pos_{};    // [m], body FRD
   std::array<Eigen::Vector3d, 6> aero_force_{};  // [N], body FRD
   std::array<Eigen::Vector3d, 6> aero_torque_{}; // [N.m], body FRD
+  std::array<Eigen::Vector3d, 6> added_mass_pos_{};                    // Reference points, body FRD [m]
+  std::array<Eigen::Matrix<double, 6, 6>, 6> added_mass_matrix_{};     // At reference points, body FRD
+
+  void update(const State& s, bool acceleration_bias_only, bool update_loads);
 
   void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot);
   void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x);
@@ -100,6 +107,6 @@ private:
   void update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRm0, const Eigen::Vector3d& bpm0, const Eigen::Matrix3d& bRmi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvm0, const Eigen::Vector3d& bam0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy);
   void update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_dot_i, const Eigen::Matrix3d& bRsi, const Eigen::Vector3d& b_omega_b_theta, const Eigen::Vector3d& b_omega_dot_b_theta, const Eigen::Vector3d& omega_phi_psi, const Eigen::Vector3d& omega_dot_phi_psi);
 
-  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], std::size_t N, typename RotationAt, typename OmegaYAt, typename ChordAt, typename WidthAt>
-  void update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::size_t idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaYAt&& omega_y_at, ChordAt&& chord_at, WidthAt&& width_at);
+  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
+  void update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, std::size_t idx0, std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at);
 };

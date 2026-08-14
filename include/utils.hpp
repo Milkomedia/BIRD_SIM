@@ -149,3 +149,58 @@ static inline double J5_model(const double J3) {
 static inline std::int64_t now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+template <std::size_t N>
+inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<Eigen::Vector3d, N>& local_positions, const std::array<Eigen::Matrix<double, 6, 6>, N>& local_spatial_inertias, const std::array<int, N>& body_ids, const Eigen::Matrix3d& world_R_body, const Eigen::Vector3d& world_p_body, mjtNum* jac, mjtNum* inertia_jac) {
+  const int nv = m->nv;
+  mjtNum* const jacp = jac;
+  mjtNum* const jacr = jac + 3*nv;
+
+  for (std::size_t i=0; i<N; ++i) {
+    const int body_id = body_ids[i];
+    if (body_id <= 0) {continue;}
+
+    const Eigen::Vector3d point = world_p_body + world_R_body*local_positions[i];
+    const mjtNum point_mj[3] = {static_cast<mjtNum>(point(0)), static_cast<mjtNum>(point(1)), static_cast<mjtNum>(point(2))};
+    mj_jac(m, d, jacp, jacr, point_mj, body_id);
+
+    // Express the world-frame Jacobian in the supplied body-local frame.
+    for (int col=0; col<nv; ++col) {
+      const mjtNum jpx = jacp[col];
+      const mjtNum jpy = jacp[nv+col];
+      const mjtNum jpz = jacp[2*nv+col];
+      const mjtNum jrx = jacr[col];
+      const mjtNum jry = jacr[nv+col];
+      const mjtNum jrz = jacr[2*nv+col];
+
+      jacp[col]      = static_cast<mjtNum>(world_R_body(0,0))*jpx + static_cast<mjtNum>(world_R_body(1,0))*jpy + static_cast<mjtNum>(world_R_body(2,0))*jpz;
+      jacp[nv+col]   = static_cast<mjtNum>(world_R_body(0,1))*jpx + static_cast<mjtNum>(world_R_body(1,1))*jpy + static_cast<mjtNum>(world_R_body(2,1))*jpz;
+      jacp[2*nv+col] = static_cast<mjtNum>(world_R_body(0,2))*jpx + static_cast<mjtNum>(world_R_body(1,2))*jpy + static_cast<mjtNum>(world_R_body(2,2))*jpz;
+      jacr[col]      = static_cast<mjtNum>(world_R_body(0,0))*jrx + static_cast<mjtNum>(world_R_body(1,0))*jry + static_cast<mjtNum>(world_R_body(2,0))*jrz;
+      jacr[nv+col]   = static_cast<mjtNum>(world_R_body(0,1))*jrx + static_cast<mjtNum>(world_R_body(1,1))*jry + static_cast<mjtNum>(world_R_body(2,1))*jrz;
+      jacr[2*nv+col] = static_cast<mjtNum>(world_R_body(0,2))*jrx + static_cast<mjtNum>(world_R_body(1,2))*jry + static_cast<mjtNum>(world_R_body(2,2))*jrz;
+    }
+
+    for (int row=0; row<6; ++row) {
+      for (int col=0; col<nv; ++col) {
+        mjtNum value = 0;
+        for (int k=0; k<6; ++k) {value += static_cast<mjtNum>(local_spatial_inertias[i](row,k))*jac[k*nv+col];}
+        inertia_jac[row*nv+col] = value;
+      }
+    }
+
+    for (int row=0; row<nv; ++row) {
+      int address = m->dof_Madr[row];
+      int col = row;
+      while (col >= 0) {
+        mjtNum value = 0;
+        for (int k=0; k<6; ++k) {value += jac[k*nv+row]*inertia_jac[k*nv+col];}
+        d->qM[address++] += value;
+        col = m->dof_parentid[col];
+      }
+    }
+  }
+
+  mj_factorM(m, d);
+  if (d->nefc > 0) {mj_projectConstraint(m, d);}
+}
