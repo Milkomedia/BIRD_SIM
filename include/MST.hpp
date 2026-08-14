@@ -87,7 +87,17 @@ public:
   const StripState& copy_strip_state() const noexcept {return strip_state_;}
 
 private:
+  struct DynamicStallState {
+    double X = 1.0;
+    double alpha = 0.0;
+    double tau1 = 0.0;
+    double tau2 = 0.0;
+    bool initialized = false;
+    bool active = false;
+  };
+
   StripState strip_state_{};
+  std::array<DynamicStallState, 2*(param::NH+param::NR+param::NM)> dynamic_stall_state_{};
   std::array<Eigen::Vector3d, 6> aero_pos_{};    // [m], body FRD
   std::array<Eigen::Vector3d, 6> aero_force_{};  // [N], body FRD
   std::array<Eigen::Vector3d, 6> aero_torque_{}; // [N.m], body FRD
@@ -107,6 +117,6 @@ private:
   void update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRm0, const Eigen::Vector3d& bpm0, const Eigen::Matrix3d& bRmi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvm0, const Eigen::Vector3d& bam0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy);
   void update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_dot_i, const Eigen::Matrix3d& bRsi, const Eigen::Vector3d& b_omega_b_theta, const Eigen::Vector3d& b_omega_dot_b_theta, const Eigen::Vector3d& omega_phi_psi, const Eigen::Vector3d& omega_dot_phi_psi);
 
-  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
-  void update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, std::size_t idx0, std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at);
+  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
+  void update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, std::size_t idx0, std::size_t state_idx0, std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at);
 };

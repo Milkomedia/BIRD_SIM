@@ -10,6 +10,7 @@ MST::MST() {reset();}
 void MST::reset() {
   const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
   strip_state_.reset();
+  for (DynamicStallState& state : dynamic_stall_state_) {state = {};}
   aero_pos_.fill(zero);
   aero_force_.fill(zero);
   added_mass_pos_.fill(zero);
@@ -320,9 +321,14 @@ void MST::update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_d
 }
 
 
-template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
-void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, const std::size_t idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at) {
+template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
+void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, const std::size_t idx0, const std::size_t state_idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at) {
   constexpr double RAD_TO_DEG = 57.29577951308232;
+  constexpr double DEG_TO_RAD = 0.017453292519943295;
+  constexpr double TWO_PI = 6.283185307179586;
+  constexpr double GK_TAU1 = 4.24;
+  constexpr double GK_DSTALL_MAX = 20.0;
+  constexpr double INV_DT = 1.0 / param::SIM_DT_SEC;
   constexpr double HALF_RHO = 0.5 * param::AIR_DENSITY;
   constexpr double QUARTER_PI_RHO = 0.7853981633974483 * param::AIR_DENSITY;
   constexpr double INV_KINEMATIC_VISCOSITY = 1.0 / param::AIR_KINEMATIC_VISCOSITY;
@@ -340,6 +346,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
   // calculation for each strip
   for (std::size_t i=0; i<N; ++i) {
     const std::size_t idx = idx0+i;
+    DynamicStallState& dynamic_stall = dynamic_stall_state_[state_idx0+i];
     const double c = chord_at(i);
     const double dy = width_at(i);
     const double area = c * dy;
@@ -357,17 +364,81 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
 
     if (U2 > 1e-12 && c > 0.0 && dy > 0.0) {
       const double U = std::sqrt(U2);
-      const double alpha_deg = std::atan2(vz, vx) * RAD_TO_DEG;
+      const double alpha = std::atan2(vz, vx);
+      const double alpha_deg = alpha * RAD_TO_DEG;
       const double Re = U * c * INV_KINEMATIC_VISCOSITY;
-      const double Cd = param::coeff::bilinear_interpolate(CD, alpha_deg, Re);
-      const double Cl = param::coeff::bilinear_interpolate(CL, alpha_deg, Re);
-      const double Cm = param::coeff::bilinear_interpolate(CM, alpha_deg, Re);
+
+      std::size_t alpha_idx;
+      std::size_t Re_idx;
+      double k_alpha;
+      double k_Re;
+      param::coeff::get_bilinear_lookup(alpha_idx, Re_idx, k_alpha, k_Re, alpha_deg, Re);
+
+      const double Cd   = param::coeff::bilinear_interpolate(CD, alpha_idx, Re_idx, k_alpha, k_Re);
+            double Cl   = param::coeff::bilinear_interpolate(CL, alpha_idx, Re_idx, k_alpha, k_Re);
+      const double Cm   = param::coeff::bilinear_interpolate(CM, alpha_idx, Re_idx, k_alpha, k_Re);
+      const double X_eq = param::coeff::bilinear_interpolate(X0, alpha_idx, Re_idx, k_alpha, k_Re);
+
+      double alpha_dot = 0.0;
+      if (dynamic_stall.initialized) {
+        double delta_alpha = alpha-dynamic_stall.alpha;
+        if (delta_alpha > M_PI) {delta_alpha -= TWO_PI;}
+        else if (delta_alpha < -M_PI) {delta_alpha += TWO_PI;}
+        alpha_dot = delta_alpha * INV_DT;
+
+        if (!dynamic_stall.active && alpha_dot > 0.0) {
+          const double alpha_stall = param::coeff::interpolate_Re(ALPHA_STALL, Re_idx, k_Re) * DEG_TO_RAD;
+          if (dynamic_stall.alpha < alpha_stall && alpha >= alpha_stall) {
+            // Latch the generalized GK delay at the positive static-stall crossing.
+            const double Kss = std::max(0.5*alpha_dot*c/U, 1e-6);
+            const double Dstall = std::min(0.0815*std::pow(Kss, -7.0/9.0) + GK_TAU1, GK_DSTALL_MAX);
+            dynamic_stall.tau1 = GK_TAU1*c/U;
+            dynamic_stall.tau2 = Dstall*c/U;
+            dynamic_stall.active = true;
+          }
+        }
+      }
+      else {
+      dynamic_stall.X = X_eq;
+        dynamic_stall.alpha = alpha;
+        dynamic_stall.tau1 = 0.0;
+        dynamic_stall.tau2 = 0.0;
+        dynamic_stall.active = false;
+        dynamic_stall.initialized = true;
+      }
+
+      double X_target = X_eq;
+      if (dynamic_stall.active) {
+        std::size_t target_alpha_idx;
+        double k_target_alpha;
+        param::coeff::update_alpha_lookup(target_alpha_idx, k_target_alpha, (alpha-dynamic_stall.tau2*alpha_dot)*RAD_TO_DEG);
+        X_target = param::coeff::bilinear_interpolate(X0, target_alpha_idx, Re_idx, k_target_alpha, k_Re);
+      }
+      const double tau1 = dynamic_stall.active ? dynamic_stall.tau1 : GK_TAU1*c/U;
+      // Stable implicit-Euler update of tau1*dX/dt+X=X0(alpha_eff,Re).
+      dynamic_stall.X += param::SIM_DT_SEC/(tau1+param::SIM_DT_SEC)*(X_target-dynamic_stall.X);
+      dynamic_stall.X = std::clamp(dynamic_stall.X, 0.0, 1.0);
+      dynamic_stall.alpha = alpha;
+
+      if (dynamic_stall.active && alpha_dot < 0.0 && X_eq > 0.98) {
+        dynamic_stall.active = false;
+        dynamic_stall.tau1 = 0.0;
+        dynamic_stall.tau2 = 0.0;
+      }
+
+      const double one_plus_sqrt_X = 1.0 + std::sqrt(dynamic_stall.X);
+      const double one_plus_sqrt_X_eq = 1.0 + std::sqrt(X_eq);
+      Cl *= (one_plus_sqrt_X*one_plus_sqrt_X)/(one_plus_sqrt_X_eq*one_plus_sqrt_X_eq);
 
       const double k_f = HALF_RHO * U * area;
       qS = k_f * U;
       Fx = k_f * (Cd*vx - Cl*vz);
       Fz = k_f * (Cd*vz + Cl*vx);
       My = qS * c * Cm;
+    }
+    else {
+      dynamic_stall.initialized = false;
+      dynamic_stall.active = false;
     }
 
     // a and omega_dot contain only qdot-dependent bias in update_dynamics().
@@ -378,7 +449,8 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     const double added_force = added_mass * normal_acceleration;
 
     Fz += added_force;
-    My -= 0.25*c*added_force + 0.03125*added_mass*c*c*omega_dot_y;
+    const double added_mass_c_c_inv32 = 0.03125*added_mass*c*c;
+    My -= 0.25*c*added_force + added_mass_c_c_inv32*omega_dot_y;
 
     // Add each strip effect
     const Eigen::Matrix3d& bRsi = rotation_at(i);
@@ -391,7 +463,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     added_direction.head<3>() = normal;
     added_direction.tail<3>() = (p[idx] + 2.0*quarter_chord - added_mass_pos).cross(normal);
     added_mass_matrix.noalias() += added_mass*added_direction*added_direction.transpose();
-    added_mass_matrix.bottomRightCorner<3, 3>().noalias() += (0.03125*added_mass*c*c)*bRsi.col(1)*bRsi.col(1).transpose();
+    added_mass_matrix.bottomRightCorner<3, 3>().noalias() += added_mass_c_c_inv32*bRsi.col(1)*bRsi.col(1).transpose();
 
     force_accum += bF;
     moment_accum += aerodynamic_center.cross(bF) + My * bRsi.col(1);
@@ -590,8 +662,8 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
     if (update_loads) { // Update aerodynamic loads
       const std::size_t load_idx0 = 3*wing;
 
-      update_segment_aerodynamics<param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM, param::NH>(
-        strip_state_.p_h, strip_state_.v_h, strip_state_.a_h, wing*param::NH, load_idx0,
+      update_segment_aerodynamics<param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM, param::coeff::NACA_GK_X0, param::coeff::NACA_GK_ALPHA_STALL, param::NH>(
+        strip_state_.p_h, strip_state_.v_h, strip_state_.a_h, wing*param::NH, wing*param::NH, load_idx0,
         [&bRhi](const std::size_t) -> const Eigen::Matrix3d& {return bRhi;},
         [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_h[wing];},
         [this, wing](const std::size_t) {return strip_state_.wdot_h[wing].y();},
@@ -599,8 +671,8 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         [&humerus_rotation](const std::size_t i) {return param::DY_H*std::abs(humerus_rotation.cos_psi[0]);}
       );
 
-      update_segment_aerodynamics<param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM, param::NR>(
-        strip_state_.p_r, strip_state_.v_r, strip_state_.a_r, wing*param::NR, load_idx0+1,
+      update_segment_aerodynamics<param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM, param::coeff::S20_GK_X0, param::coeff::S20_GK_ALPHA_STALL, param::NR>(
+        strip_state_.p_r, strip_state_.v_r, strip_state_.a_r, wing*param::NR, 2*param::NH+wing*param::NR, load_idx0+1,
         [&radius_rotation](const std::size_t i) -> const Eigen::Matrix3d& {return radius_rotation.bRri[i];},
         [this, wing](const std::size_t i) -> const Eigen::Vector3d& {return strip_state_.w_r[wing*param::NR+i];},
         [this, wing](const std::size_t i) {return strip_state_.wdot_r[wing*param::NR+i].y();},
@@ -608,8 +680,8 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         [&radius_rotation](const std::size_t i) {return param::DY_R*std::abs(radius_rotation.cos_psi[i]);}
       );
 
-      update_segment_aerodynamics<param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM, param::NM>(
-        strip_state_.p_m, strip_state_.v_m, strip_state_.a_m, wing*param::NM, load_idx0+2,
+      update_segment_aerodynamics<param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM, param::coeff::S40_GK_X0, param::coeff::S40_GK_ALPHA_STALL, param::NM>(
+        strip_state_.p_m, strip_state_.v_m, strip_state_.a_m, wing*param::NM, 2*(param::NH+param::NR)+wing*param::NM, load_idx0+2,
         [&bRmi](const std::size_t) -> const Eigen::Matrix3d& {return bRmi;},
         [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_m[wing];},
         [this, wing](const std::size_t) {return strip_state_.wdot_m[wing].y();},
