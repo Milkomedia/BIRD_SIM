@@ -8,9 +8,9 @@
 #include <cstdint>
 
 namespace param {
-  inline constexpr std::chrono::steady_clock::duration SIM_DT_US = std::chrono::microseconds(500);
+  inline constexpr std::chrono::steady_clock::duration SIM_DT_US = std::chrono::microseconds(200);
   inline constexpr std::chrono::steady_clock::duration RENDER_DT_US = std::chrono::microseconds(16667);
-  inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(150);
+  inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(20);
   inline constexpr double SIM_DT_SEC = std::chrono::duration<double>(SIM_DT_US).count();
 
   // ----- body elipsoid -----
