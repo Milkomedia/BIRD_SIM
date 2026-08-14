@@ -76,7 +76,7 @@ public:
 
   MST();
   void reset();
-  void update_dynamics(const State& s) {update(s, true, true);}
+  void update_dynamics(const State& s) {update(s, true, true); update_body_elipsoid(s);}
   void update_visualization(const State& s) {update(s, false, false);}
 
   const std::array<Eigen::Vector3d, 6>& positions() const noexcept {return aero_pos_;}
@@ -84,6 +84,7 @@ public:
   const std::array<Eigen::Vector3d, 6>& torques() const noexcept {return aero_torque_;}
   const std::array<Eigen::Vector3d, 6>& added_mass_positions() const noexcept {return added_mass_pos_;}
   const std::array<Eigen::Matrix<double, 6, 6>, 6>& added_mass_matrices() const noexcept {return added_mass_matrix_;}
+  const std::array<Eigen::Vector3d, 3>& body_elipsoid() const noexcept {return body_elipsoid_;}
   const StripState& copy_strip_state() const noexcept {return strip_state_;}
 
 private:
@@ -103,8 +104,10 @@ private:
   std::array<Eigen::Vector3d, 6> aero_torque_{}; // [N.m], body FRD
   std::array<Eigen::Vector3d, 6> added_mass_pos_{};                    // Reference points, body FRD [m]
   std::array<Eigen::Matrix<double, 6, 6>, 6> added_mass_matrix_{};     // At reference points, body FRD
+  std::array<Eigen::Vector3d, 3> body_elipsoid_{};                     // Position [m], force [N], torque [N.m], body FRD
 
   void update(const State& s, bool acceleration_bias_only, bool update_loads);
+  void update_body_elipsoid(const State& s);
 
   void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot);
   void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x);

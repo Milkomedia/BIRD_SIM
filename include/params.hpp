@@ -13,6 +13,10 @@ namespace param {
   inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(150);
   inline constexpr double SIM_DT_SEC = std::chrono::duration<double>(SIM_DT_US).count();
 
+  // ----- body elipsoid -----
+  inline const Eigen::Vector3d ELIPSOID_CENTER_POS = Eigen::Vector3d(-0.084, 0.0, 0.0); // [m], body FRD
+  inline const Eigen::Vector3d ELIPSOID_SIZE = Eigen::Vector3d(0.156, 0.06, 0.06);       // [m], semi-axes x,y,z
+
   // ----- MST -----
   inline constexpr double AIR_DENSITY = 1.225;               // [kg/m^3]
   inline constexpr double AIR_KINEMATIC_VISCOSITY = 1.5e-5;  // [m^2/s]

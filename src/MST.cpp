@@ -3,6 +3,7 @@
 #include "coeff/coeff.hpp"
 #include "utils.hpp" // State
 
+#include <algorithm>
 #include <cmath>
 
 MST::MST() {reset();}
@@ -15,6 +16,158 @@ void MST::reset() {
   aero_force_.fill(zero);
   added_mass_pos_.fill(zero);
   for (Eigen::Matrix<double, 6, 6>& matrix : added_mass_matrix_) {matrix.setZero();}
+  body_elipsoid_[0] = param::ELIPSOID_CENTER_POS;
+  body_elipsoid_[1].setZero();
+  body_elipsoid_[2].setZero();
+}
+
+void MST::update_body_elipsoid(const State& s) {
+  constexpr double PI = 3.14159265358979323846;
+  constexpr double EPS = 1e-14;
+  constexpr double MIN = 1e-15;
+  constexpr double RHO = param::AIR_DENSITY;
+  constexpr double VISCOSITY = param::AIR_DENSITY * param::AIR_KINEMATIC_VISCOSITY;
+  constexpr double BLUNT_DRAG_COEF = 0.5;
+  constexpr double SLENDER_DRAG_COEF = 0.25;
+  constexpr double ANGULAR_DRAG_COEF = 1.5;
+  constexpr double KUTTA_LIFT_COEF = 1.0;
+  constexpr double MAGNUS_LIFT_COEF = 1.0;
+
+  // Static geometry terms are evaluated once. Layout:
+  // [0] V, [1] Amax, [2] linear viscous force coef, [3] linear viscous torque coef,
+  // [4:6] projected-area factors, [7:9] rho*virtual mass,
+  // [10:12] rho*virtual inertia, [13:15] angular quadratic-drag factors.
+  static const std::array<double, 16> fluid = []() {
+    constexpr double PI = 3.14159265358979323846;
+    constexpr double EPS = 1e-14;
+    constexpr double RHO = param::AIR_DENSITY;
+    constexpr double VISCOSITY = param::AIR_DENSITY * param::AIR_KINEMATIC_VISCOSITY;
+    constexpr double SLENDER_DRAG_COEF = 0.25;
+    constexpr double ANGULAR_DRAG_COEF = 1.5;
+
+    const auto kappa = [](const double dx, const double dy, const double dz) {
+      static constexpr double W[15] = {
+        0.01146766, 0.03154605, 0.05239501, 0.07032663, 0.08450236,
+        0.09517529, 0.10221647, 0.10474107, 0.10221647, 0.09517529,
+        0.08450236, 0.07032663, 0.05239501, 0.03154605, 0.01146766
+      };
+      static constexpr double L[15] = {
+        7.865151709349917e-08, 1.7347976913907274e-05, 0.0003548008144506193,
+        0.002846636252924549, 0.014094260903596077, 0.053063261727396636,
+        0.17041978741317773, 0.5, 1.4036301548686991, 3.9353484827022642,
+        11.644841677041734, 39.53187807410903, 177.5711362220801,
+        1429.4772912937397, 54087.416549217705
+      };
+      static constexpr double D[15] = {
+        5.538677720489877e-05, 0.002080868285293228, 0.016514126520723166,
+        0.07261900344370877, 0.23985243401862602, 0.6868318249020725,
+        1.8551129519182894, 5.0, 14.060031152313941, 43.28941239611009,
+        156.58546376397112, 747.9826085305024, 5827.4042950027115,
+        116754.0197944512, 25482945.327264845
+      };
+
+      const double inv_dx2 = 1.0/(dx*dx);
+      const double inv_dy2 = 1.0/(dy*dy);
+      const double inv_dz2 = 1.0/(dz*dz);
+      const double scale = std::pow(dx*dx*dx*dy*dz, 0.4);
+      double result = 0.0;
+      for (std::size_t i=0; i<15; ++i) {
+        const double lambda = scale*L[i];
+        const double denom = (1.0 + lambda*inv_dx2)*std::sqrt((1.0 + lambda*inv_dx2)*(1.0 + lambda*inv_dy2)*(1.0 + lambda*inv_dz2));
+        result += scale*D[i]/denom*W[i];
+      }
+      return result*inv_dx2;
+    };
+
+    const double dx = param::ELIPSOID_SIZE.x();
+    const double dy = param::ELIPSOID_SIZE.y();
+    const double dz = param::ELIPSOID_SIZE.z();
+    const double dx2 = dx*dx;
+    const double dy2 = dy*dy;
+    const double dz2 = dz*dz;
+    const double volume = (4.0/3.0)*PI*dx*dy*dz;
+    const double kx = kappa(dx, dy, dz);
+    const double ky = kappa(dy, dz, dx);
+    const double kz = kappa(dz, dx, dy);
+
+    const double Ixfac = (dy2-dz2)*(dy2-dz2)*std::abs(kz-ky) / std::max(EPS, std::abs(2.0*(dy2-dz2) + (dy2+dz2)*(ky-kz)));
+    const double Iyfac = (dz2-dx2)*(dz2-dx2)*std::abs(kx-kz) / std::max(EPS, std::abs(2.0*(dz2-dx2) + (dz2+dx2)*(kz-kx)));
+    const double Izfac = (dx2-dy2)*(dx2-dy2)*std::abs(ky-kx) / std::max(EPS, std::abs(2.0*(dx2-dy2) + (dx2+dy2)*(kx-ky)));
+
+    const double d_max = std::max({dx, dy, dz});
+    const double d_min = std::min({dx, dy, dz});
+    const double d_mid = dx + dy + dz - d_max - d_min;
+    const double eq_sphere_D = (2.0/3.0)*(dx + dy + dz);
+    const double d_max2 = d_max*d_max;
+    const double I_max = (8.0/15.0)*PI*d_mid*d_max2*d_max2;
+
+    const double max_yz = std::max(dy, dz);
+    const double max_zx = std::max(dz, dx);
+    const double max_xy = std::max(dx, dy);
+    const double max_yz2 = max_yz*max_yz;
+    const double max_zx2 = max_zx*max_zx;
+    const double max_xy2 = max_xy*max_xy;
+    const double IIx = (8.0/15.0)*PI*dx*max_yz2*max_yz2;
+    const double IIy = (8.0/15.0)*PI*dy*max_zx2*max_zx2;
+    const double IIz = (8.0/15.0)*PI*dz*max_xy2*max_xy2;
+
+    const double pyz = dy*dz;
+    const double pzx = dz*dx;
+    const double pxy = dx*dy;
+
+    std::array<double, 16> out{};
+    out[0] = volume;
+    out[1] = PI*d_max*d_mid;
+    out[2] = VISCOSITY*3.0*PI*eq_sphere_D;
+    out[3] = VISCOSITY*PI*eq_sphere_D*eq_sphere_D*eq_sphere_D;
+    out[4] = pyz*pyz;
+    out[5] = pzx*pzx;
+    out[6] = pxy*pxy;
+    out[7] = RHO*volume*kx/std::max(EPS, 2.0-kx);
+    out[8] = RHO*volume*ky/std::max(EPS, 2.0-ky);
+    out[9] = RHO*volume*kz/std::max(EPS, 2.0-kz);
+    out[10] = RHO*volume*Ixfac/5.0;
+    out[11] = RHO*volume*Iyfac/5.0;
+    out[12] = RHO*volume*Izfac/5.0;
+    out[13] = ANGULAR_DRAG_COEF*IIx + SLENDER_DRAG_COEF*(I_max-IIx);
+    out[14] = ANGULAR_DRAG_COEF*IIy + SLENDER_DRAG_COEF*(I_max-IIy);
+    out[15] = ANGULAR_DRAG_COEF*IIz + SLENDER_DRAG_COEF*(I_max-IIz);
+    return out;
+  }();
+
+  const Eigen::Vector3d lin_vel = s.R.transpose()*(s.vel-s.vel_f) + s.w.cross(param::ELIPSOID_CENTER_POS);
+  const Eigen::Vector3d& ang_vel = s.w;
+  const double lin_speed = lin_vel.norm();
+
+  // MuJoCo's stateless ellipsoid model uses only the velocity-dependent added-mass bias.
+  const Eigen::Vector3d virtual_lin_mom(fluid[7]*lin_vel.x(), fluid[8]*lin_vel.y(), fluid[9]*lin_vel.z());
+  const Eigen::Vector3d virtual_ang_mom(fluid[10]*ang_vel.x(), fluid[11]*ang_vel.y(), fluid[12]*ang_vel.z());
+  Eigen::Vector3d force = virtual_lin_mom.cross(ang_vel);
+  Eigen::Vector3d torque = virtual_lin_mom.cross(lin_vel) + virtual_ang_mom.cross(ang_vel);
+
+  force += MAGNUS_LIFT_COEF*RHO*fluid[0]*ang_vel.cross(lin_vel);
+
+  const double vx2 = lin_vel.x()*lin_vel.x();
+  const double vy2 = lin_vel.y()*lin_vel.y();
+  const double vz2 = lin_vel.z()*lin_vel.z();
+  const double proj_denom = fluid[4]*fluid[4]*vx2 + fluid[5]*fluid[5]*vy2 + fluid[6]*fluid[6]*vz2;
+  const double proj_num = fluid[4]*vx2 + fluid[5]*vy2 + fluid[6]*vz2;
+  const double A_proj = PI*std::sqrt(proj_denom/std::max(MIN, proj_num));
+
+  const Eigen::Vector3d normal(fluid[4]*lin_vel.x(), fluid[5]*lin_vel.y(), fluid[6]*lin_vel.z());
+  const double cos_alpha = proj_num/std::max(MIN, lin_speed*proj_denom);
+  const Eigen::Vector3d kutta_circ = KUTTA_LIFT_COEF*RHO*cos_alpha*A_proj*normal.cross(lin_vel);
+  force += kutta_circ.cross(lin_vel);
+
+  const Eigen::Vector3d mom_visc(fluid[13]*ang_vel.x(), fluid[14]*ang_vel.y(), fluid[15]*ang_vel.z());
+  const double drag_lin_coef = fluid[2] + RHO*lin_speed*(A_proj*BLUNT_DRAG_COEF + SLENDER_DRAG_COEF*(fluid[1]-A_proj));
+  const double drag_ang_coef = fluid[3] + RHO*mom_visc.norm();
+  force -= drag_lin_coef*lin_vel;
+  torque -= drag_ang_coef*ang_vel;
+
+  body_elipsoid_[0] = param::ELIPSOID_CENTER_POS;
+  body_elipsoid_[1] = force;
+  body_elipsoid_[2] = torque;
 }
 
 void MST::update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot) {

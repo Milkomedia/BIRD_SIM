@@ -52,8 +52,8 @@ struct SimData {
   mjtNum time = 0;
   State state{};
   MST::StripState strip_state{};
-  std::array<Eigen::Vector3d, 6> aero_pos{};   // [m], body FRD
-  std::array<Eigen::Vector3d, 6> aero_force{}; // [N], body FRD
+  std::array<Eigen::Vector3d, 7> aero_pos{};   // [m], body FRD; [6] = body ellipsoid
+  std::array<Eigen::Vector3d, 7> aero_force{}; // [N], body FRD; [6] = body ellipsoid
   std::array<double, 12> theta_d{};
 };
 

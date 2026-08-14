@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
   constexpr std::array<const char*, 6> wing_plate_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
   std::array<int, 6> wing_plate_ids{};
   for (std::size_t i=0; i<wing_plate_ids.size(); ++i) {wing_plate_ids[i] = mj_name2id(m, mjOBJ_BODY, wing_plate_names[i]);}
+  const int body_id = mj_name2id(m, mjOBJ_BODY, "body");
 
   const mjtNum* const sensor_pos  = sim_data->sensordata + imu_pos_sensor_adr;
   const mjtNum* const sensor_vel  = sim_data->sensordata + imu_vel_sensor_adr;
@@ -127,8 +128,8 @@ int main(int argc, char** argv) {
     std::vector<mjtNum> snapshot_qvel(static_cast<std::size_t>(m->nv));
     std::vector<mjtNum> added_mass_jac(6*static_cast<std::size_t>(m->nv));
     std::vector<mjtNum> added_mass_inertia_jac(6*static_cast<std::size_t>(m->nv));
-    std::array<Eigen::Vector3d, 6> applied_aero_pos{};
-    std::array<Eigen::Vector3d, 6> applied_aero_force{};
+    std::array<Eigen::Vector3d, 7> applied_aero_pos{};
+    std::array<Eigen::Vector3d, 7> applied_aero_force{};
     mjtNum snapshot_time = sim_data->time;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
@@ -254,12 +255,26 @@ int main(int argc, char** argv) {
             mj_applyFT(m, sim_data, force, torque, point, wing_plate_ids[i], sim_data->qfrc_applied);
           }
 
+          {
+            const std::array<Eigen::Vector3d, 3>& body_elipsoid = mst.body_elipsoid();
+            const Eigen::Vector3d GF = GRb_FLU * body_elipsoid[1];
+            const Eigen::Vector3d GT = GRb_FLU * body_elipsoid[2];
+            const Eigen::Vector3d Gp = Gpb_FLU + GRb_FLU * body_elipsoid[0];
+            const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
+            const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
+            const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
+            mj_applyFT(m, sim_data, force, torque, point, body_id, sim_data->qfrc_applied);
+          }
+
           if (snapshot_due) {
             std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
             std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
             snapshot_time = sim_data->time;
-            applied_aero_pos = mst.positions();
-            applied_aero_force = mst.forces();
+            std::copy_n(mst.positions().begin(), 6, applied_aero_pos.begin());
+            std::copy_n(mst.forces().begin(), 6, applied_aero_force.begin());
+            const std::array<Eigen::Vector3d, 3>& body_elipsoid = mst.body_elipsoid();
+            applied_aero_pos[6] = body_elipsoid[0];
+            applied_aero_force[6] = body_elipsoid[1];
           }
 
           mj_step2(m, sim_data);
@@ -334,8 +349,8 @@ int main(int argc, char** argv) {
   std::uint64_t handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
   State copied_state{};
   MST::StripState copied_strip_state{};
-  std::array<Eigen::Vector3d, 6> copied_aero_pos{};
-  std::array<Eigen::Vector3d, 6> copied_aero_force{};
+  std::array<Eigen::Vector3d, 7> copied_aero_pos{};
+  std::array<Eigen::Vector3d, 7> copied_aero_force{};
 
   while (!glfwWindowShouldClose(window)) {
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -427,12 +442,12 @@ int main(int argc, char** argv) {
         mj_utils::append_humerus_strip_frames(copied_strip_state.p_h, wing*param::NH, GTb, bRhi, humerus_rotation.cos_psi[0]);
         mj_utils::append_radius_strip_frames(copied_strip_state.p_r, wing*param::NR, GTb, radius_rotation.bRri, radius_rotation.cos_psi);
         mj_utils::append_manus_strip_frames(copied_strip_state.p_m, wing*param::NM, GTb, bRmi, manus_rotation.cos_psi[0]);
+      }
 
-        for (std::size_t i=0; i<6; ++i) {
-          const Eigen::Vector3d origin = Gpb + GRb*copied_aero_pos[i];
-          const Eigen::Vector3d force = GRb*copied_aero_force[i];
-          mj_utils::append_arrow(origin, force, mj_utils::AERO_FORCE_ARROW_SCALE, mj_utils::AERO_FORCE_ARROW_WIDTH, mj_utils::AERO_FORCE_ARROW_COLOR);
-        }
+      for (std::size_t i=0; i<7; ++i) {
+        const Eigen::Vector3d origin = Gpb + GRb*copied_aero_pos[i];
+        const Eigen::Vector3d force = GRb*copied_aero_force[i];
+        mj_utils::append_arrow(origin, force, mj_utils::AERO_FORCE_ARROW_SCALE, mj_utils::AERO_FORCE_ARROW_WIDTH, mj_utils::AERO_FORCE_ARROW_COLOR);
       }
     }
 
