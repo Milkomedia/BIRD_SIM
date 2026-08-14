@@ -45,8 +45,11 @@ venv/
 
 # Logs and temporary files
 *.log
+*.mmap
+*.npz
 *.tmp
 *.temp
+log/
 
 # Local environment files
 .env

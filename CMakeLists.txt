@@ -16,6 +16,7 @@ add_executable(
   src/Servo.cpp
   src/ELRS.cpp
   src/MST.cpp
+  src/mmap_manager.cpp
 )
 
 target_include_directories(

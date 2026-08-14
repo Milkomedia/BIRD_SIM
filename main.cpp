@@ -4,6 +4,7 @@
 #include "utils.hpp"
 #include "Servo.hpp"
 #include "ELRS.hpp"
+#include "mmap_manager.hpp"
 
 #include <Eigen/Core>
 #include <mujoco/mujoco.h>
@@ -121,6 +122,8 @@ int main(int argc, char** argv) {
     for (std::size_t i=0; i<12; ++i) {servo.emplace_back(m, mj_utils::kActuatorNames[i], motor_parameters[i % motor_parameters.size()]);}
 
     MST mst{};
+    bird_mmap::MMapLogger mmap_logger{};
+    mmap_logger.open();
     State s{};
     Command cmd{};
     ViewerData viewer_data{};
@@ -130,8 +133,12 @@ int main(int argc, char** argv) {
     std::vector<mjtNum> added_mass_inertia_jac(6*static_cast<std::size_t>(m->nv));
     std::array<Eigen::Vector3d, 7> applied_aero_pos{};
     std::array<Eigen::Vector3d, 7> applied_aero_force{};
+    std::array<double, 12> servo_torque{};
     mjtNum snapshot_time = sim_data->time;
+    double full_added_time = -1.0;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
+    std::uint64_t sim_step = 0;
+    std::size_t log_decimation = 0;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -156,12 +163,21 @@ int main(int argc, char** argv) {
         mst.reset();
         applied_aero_pos.fill(Eigen::Vector3d::Zero());
         applied_aero_force.fill(Eigen::Vector3d::Zero());
+        servo_torque.fill(0.0);
+        full_added_time = -1.0;
+        sim_step = 0;
+        log_decimation = 0;
         handled_reset_epoch = viewer_data.reset_epoch;
       }
 
       snapshot_elapsed += param::SIM_DT_US;
       const bool snapshot_due = reset_requested || snapshot_elapsed >= param::RENDER_DT_US;
       if (snapshot_due) {snapshot_elapsed = reset_requested ? std::chrono::steady_clock::duration::zero() : snapshot_elapsed - param::RENDER_DT_US;}
+      bool log_due = false;
+      if (!reset_requested && !viewer_data.paused) {
+        log_due = ++log_decimation >= bird_mmap::LOG_DECIMATION;
+        if (log_due) {log_decimation = 0;}
+      }
 
       // --- ELRS RC parse ---
       if (elrs_enabled && elrs.update(elrs_channels)) {
@@ -205,6 +221,7 @@ int main(int argc, char** argv) {
         for(std::size_t i=0; i<12; ++i) {
           servo[i].desired_rad = cmd.theta[i];
           servo[i].step(*sim_data);
+          servo_torque[i] = servo[i].motor_state.torque;
         }
 
         // --- MuJoCo simulation step2 ---
@@ -231,7 +248,7 @@ int main(int argc, char** argv) {
             }
 
             FK(s.theta, s.bTj);
-            mst.update_dynamics(s);
+            mst.update_dynamics(s, log_due);
           }
 
           const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
@@ -285,8 +302,14 @@ int main(int argc, char** argv) {
             s.acc(2) = static_cast<double>(-sensor_acc[2]);
             s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
             for (std::size_t i=0; i<12; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
-            if (snapshot_due) {mst.update_visualization(s);}
+            if (snapshot_due) {
+              mst.update_visualization(s);
+              full_added_time = static_cast<double>(sim_data->time);
+            }
           }
+
+          ++sim_step;
+          if (log_due) {mmap_logger.push(static_cast<double>(sim_data->time), sim_step, handled_reset_epoch, false, full_added_time, s, cmd, mst, servo_torque);}
         }
       }
       if (snapshot_due && (reset_requested || viewer_data.paused)) {
