@@ -111,9 +111,9 @@ std::uint64_t hash_descriptors(const std::array<ChannelDescriptor, NUM_CHANNELS>
 std::uint64_t atomic_load(const std::uint64_t* value) {return __atomic_load_n(value, __ATOMIC_ACQUIRE);}
 void atomic_store(std::uint64_t* value, const std::uint64_t data) {__atomic_store_n(value, data, __ATOMIC_RELEASE);}
 
-template <std::size_t N>
-void copy_vector(float (&dst)[N][3], const std::array<Eigen::Vector3d, N>& src) {
-  for (std::size_t i=0; i<N; ++i) {
+template <std::size_t N_DST, std::size_t N_SRC>
+void copy_vector(float (&dst)[N_DST][3], const std::array<Eigen::Vector3d, N_SRC>& src) {
+  for (std::size_t i=0; i<N_DST; ++i) {
     dst[i][0] = static_cast<float>(src[i].x());
     dst[i][1] = static_cast<float>(src[i].y());
     dst[i][2] = static_cast<float>(src[i].z());
@@ -237,13 +237,15 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
     data.servo_torque[i] = static_cast<float>(servo_torque[i]);
   }
 
-  copy_vector(data.segment_pos, mst.positions());
-  copy_vector(data.segment_force, mst.forces());
-  copy_vector(data.segment_torque, mst.torques());
-  const std::array<Eigen::Vector3d, 3>& body = mst.body_elipsoid();
-  copy_vector(data.body_elipsoid_pos, body[0]);
-  copy_vector(data.body_elipsoid_force, body[1]);
-  copy_vector(data.body_elipsoid_torque, body[2]);
+  const std::array<Eigen::Vector3d, 7>& aero_pos = mst.positions();
+  const std::array<Eigen::Vector3d, 7>& aero_force = mst.forces();
+  const std::array<Eigen::Vector3d, 7>& aero_torque = mst.torques();
+  copy_vector(data.segment_pos, aero_pos);
+  copy_vector(data.segment_force, aero_force);
+  copy_vector(data.segment_torque, aero_torque);
+  copy_vector(data.body_elipsoid_pos, aero_pos.back());
+  copy_vector(data.body_elipsoid_force, aero_force.back());
+  copy_vector(data.body_elipsoid_torque, aero_torque.back());
 
   const MST::AeroTelemetry& aero = mst.aero_telemetry();
   copy_scalar(data.strip_alpha, aero.alpha);

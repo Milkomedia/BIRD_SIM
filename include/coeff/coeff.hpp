@@ -2163,41 +2163,32 @@ inline constexpr double S20_GK_ALPHA_STALL[14] = {7.4, 7.4, 7.6, 8.6, 9.8, 11.0,
 
 inline constexpr double S40_GK_ALPHA_STALL[14] = {9.2, 9.2, 10.4, 11.6, 12.8, 13.0, 12.8, 12.8, 12.8, 12.8, 12.8, 12.6, 12.6, 12.6};
 
-static inline void update_alpha_lookup(std::size_t& i, double& k_alpha, double alpha) {
-  alpha = std::clamp(alpha, ALPHA_VALUES[0], ALPHA_VALUES[175]);
-  i = std::min(static_cast<std::size_t>((alpha - ALPHA_VALUES[0]) * 5.0), std::size_t{174});
-  if (alpha < ALPHA_VALUES[i]) --i;
-  else if (i < 174 && alpha >= ALPHA_VALUES[i+1]) ++i;
-  k_alpha = (alpha - ALPHA_VALUES[i]) * 5.0;
+inline constexpr double NACA_GK_ALPHA_STALL_NEG[14] = {6.8, 6.8, 6.6, 6.6, 6.4, 6.4, 6.2, 6.8, 6.8, 6.8, 6.8, 6.6, 6.6, 6.6};
+
+inline constexpr double S20_GK_ALPHA_STALL_NEG[14] = {4.6, 4.8, 4.8, 5.0, 5.0, 5.0, 5.0, 4.8, 4.6, 4.6, 4.6, 4.8, 4.4, 4.4};
+
+inline constexpr double S40_GK_ALPHA_STALL_NEG[14] = {5.8, 6.0, 6.0, 6.0, 6.2, 6.2, 6.2, 6.2, 6.2, 6.4, 6.4, 6.4, 6.4, 6.4};
+
+static inline void get_idx_alpha(std::size_t& i, double& k_alpha, const double& alpha) {
+  const double alpha_clamped = std::clamp(alpha, ALPHA_VALUES[0], ALPHA_VALUES[175]);
+  i = std::min(static_cast<std::size_t>((alpha_clamped - ALPHA_VALUES[0]) * 5.0), std::size_t{174});
+  if (alpha_clamped < ALPHA_VALUES[i]) {--i;}
+  else if (i < 174 && alpha_clamped >= ALPHA_VALUES[i+1]) {++i;}
+  k_alpha = (alpha_clamped - ALPHA_VALUES[i]) * 5.0;
 }
 
-static inline void get_bilinear_lookup(std::size_t& i, std::size_t& j, double& k_alpha, double& k_Re, const double alpha, double Re) {
-  update_alpha_lookup(i, k_alpha, alpha);
-
-  Re = std::clamp(Re, RE_VALUES[0], RE_VALUES[13]);
-  j = std::min(static_cast<std::size_t>((Re - RE_VALUES[0]) * (13.0 / (RE_VALUES[13] - RE_VALUES[0]))), std::size_t{12});
-  if (Re < RE_VALUES[j]) --j;
-  else if (j < 12 && Re >= RE_VALUES[j+1]) ++j;
-  k_Re = (Re - RE_VALUES[j]) * RE_INV_STEP[j];
+static inline void get_idx_Re(std::size_t& i, double& k_Re, const double& Re) {
+  const double Re_clamped = std::clamp(Re, RE_VALUES[0], RE_VALUES[13]);
+  i = std::min(static_cast<std::size_t>((Re_clamped - RE_VALUES[0]) * (13.0 / (RE_VALUES[13] - RE_VALUES[0]))), std::size_t{12});
+  if (Re_clamped < RE_VALUES[i]) {--i;}
+  else if (i < 12 && Re_clamped >= RE_VALUES[i+1]) {++i;}
+  k_Re = (Re_clamped - RE_VALUES[i]) * RE_INV_STEP[i];
 }
 
 static inline double bilinear_interpolate(const double (&table)[176][14], const std::size_t i, const std::size_t j, const double k_alpha, const double k_Re) {
   const double c0 = table[i][j] + k_alpha*(table[i+1][j] - table[i][j]);
   const double c1 = table[i][j+1] + k_alpha*(table[i+1][j+1] - table[i][j+1]);
   return c0 + k_Re*(c1-c0);
-}
-
-static inline double interpolate_Re(const double (&values)[14], const std::size_t j, const double k_Re) {
-  return values[j] + k_Re*(values[j+1]-values[j]);
-}
-
-static inline double bilinear_interpolate(const double (&table)[176][14], const double alpha, const double Re) {
-  std::size_t i;
-  std::size_t j;
-  double k_alpha;
-  double k_Re;
-  get_bilinear_lookup(i, j, k_alpha, k_Re, alpha, Re);
-  return bilinear_interpolate(table, i, j, k_alpha, k_Re);
 }
 
 }  // namespace param::coeff

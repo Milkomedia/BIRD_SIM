@@ -278,40 +278,27 @@ int main(int argc, char** argv) {
           add_spatial_inertias(m, sim_data, mst.added_mass_positions(), mst.added_mass_matrices(), wing_plate_ids, GRb_FLU, Gpb_FLU, added_mass_jac.data(), added_mass_inertia_jac.data());
 
           // Apply current t_k aerodynamic wrenches.
-          const std::array<Eigen::Vector3d, 6>& bp = mst.positions();
-          const std::array<Eigen::Vector3d, 6>& bF = mst.forces();
-          const std::array<Eigen::Vector3d, 6>& bT = mst.torques();
+          const std::array<Eigen::Vector3d, 7>& bp = mst.positions();
+          const std::array<Eigen::Vector3d, 7>& bF = mst.forces();
+          const std::array<Eigen::Vector3d, 7>& bT = mst.torques();
 
-          for (std::size_t i=0; i<6; ++i) {
+          for (std::size_t i=0; i<7; ++i) {
             const Eigen::Vector3d GF = GRb_FLU * bF[i];
             const Eigen::Vector3d GT = GRb_FLU * bT[i];
             const Eigen::Vector3d Gp = Gpb_FLU + GRb_FLU * bp[i];
             const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
             const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
             const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
-            mj_applyFT(m, sim_data, force, torque, point, wing_plate_ids[i], sim_data->qfrc_applied);
-          }
-
-          {
-            const std::array<Eigen::Vector3d, 3>& body_elipsoid = mst.body_elipsoid();
-            const Eigen::Vector3d GF = GRb_FLU * body_elipsoid[1];
-            const Eigen::Vector3d GT = GRb_FLU * body_elipsoid[2];
-            const Eigen::Vector3d Gp = Gpb_FLU + GRb_FLU * body_elipsoid[0];
-            const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
-            const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
-            const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
-            mj_applyFT(m, sim_data, force, torque, point, body_id, sim_data->qfrc_applied);
+            const int target_body_id = i < wing_plate_ids.size() ? wing_plate_ids[i] : body_id;
+            mj_applyFT(m, sim_data, force, torque, point, target_body_id, sim_data->qfrc_applied);
           }
 
           if (snapshot_due) {
             std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
             std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
             snapshot_time = sim_data->time;
-            std::copy_n(mst.positions().begin(), 6, applied_aero_pos.begin());
-            std::copy_n(mst.forces().begin(), 6, applied_aero_force.begin());
-            const std::array<Eigen::Vector3d, 3>& body_elipsoid = mst.body_elipsoid();
-            applied_aero_pos[6] = body_elipsoid[0];
-            applied_aero_force[6] = body_elipsoid[1];
+            applied_aero_pos = mst.positions();
+            applied_aero_force = mst.forces();
           }
 
           mj_step2(m, sim_data);

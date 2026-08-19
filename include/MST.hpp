@@ -118,34 +118,36 @@ public:
   void update_dynamics(const State& s, const bool update_telemetry = false) {update(s, true, true, update_telemetry); update_body_elipsoid(s);}
   void update_visualization(const State& s) {update(s, false, false, false); update_full_added_mass_telemetry();}
 
-  const std::array<Eigen::Vector3d, 6>& positions() const noexcept {return aero_pos_;}
-  const std::array<Eigen::Vector3d, 6>& forces() const noexcept {return aero_force_;}
-  const std::array<Eigen::Vector3d, 6>& torques() const noexcept {return aero_torque_;}
+  const std::array<Eigen::Vector3d, 7>& positions() const noexcept {return aero_pos_;}
+  const std::array<Eigen::Vector3d, 7>& forces() const noexcept {return aero_force_;}
+  const std::array<Eigen::Vector3d, 7>& torques() const noexcept {return aero_torque_;}
   const std::array<Eigen::Vector3d, 6>& added_mass_positions() const noexcept {return added_mass_pos_;}
   const std::array<Eigen::Matrix<double, 6, 6>, 6>& added_mass_matrices() const noexcept {return added_mass_matrix_;}
-  const std::array<Eigen::Vector3d, 3>& body_elipsoid() const noexcept {return body_elipsoid_;}
   const StripState& copy_strip_state() const noexcept {return strip_state_;}
   const AeroTelemetry& aero_telemetry() const noexcept {return aero_telemetry_;}
 
 private:
   struct DynamicStallState {
-    double X = 1.0;
+    std::array<double, 2> X{1.0, 1.0};
+    std::array<double, 2> X_eq{1.0, 1.0};
+    std::array<double, 2> X_target{1.0, 1.0};
+    std::array<double, 2> q_ss{};
+    std::array<double, 2> D2{};
     double alpha = 0.0;
-    double tau1 = 0.0;
-    double tau2 = 0.0;
-    bool initialized = false;
-    bool active = false;
+    bool state_initialized = false;
+    bool alpha_initialized = false;
+    std::array<bool, 2> active{};
   };
 
   StripState strip_state_{};
   AeroTelemetry aero_telemetry_{};
   std::array<DynamicStallState, 2*(param::NH+param::NR+param::NM)> dynamic_stall_state_{};
-  std::array<Eigen::Vector3d, 6> aero_pos_{};    // [m], body FRD
-  std::array<Eigen::Vector3d, 6> aero_force_{};  // [N], body FRD
-  std::array<Eigen::Vector3d, 6> aero_torque_{}; // [N.m], body FRD
+  // [0:5] wing segments (RH, RR, RM, LH, LR, LM), [6] body ellipsoid
+  std::array<Eigen::Vector3d, 7> aero_pos_{};    // [m], body FRD
+  std::array<Eigen::Vector3d, 7> aero_force_{};  // [N], body FRD
+  std::array<Eigen::Vector3d, 7> aero_torque_{}; // [N.m], body FRD
   std::array<Eigen::Vector3d, 6> added_mass_pos_{};                    // Reference points, body FRD [m]
   std::array<Eigen::Matrix<double, 6, 6>, 6> added_mass_matrix_{};     // At reference points, body FRD
-  std::array<Eigen::Vector3d, 3> body_elipsoid_{};                     // Position [m], force [N], torque [N.m], body FRD
 
   void update(const State& s, bool acceleration_bias_only, bool update_loads, bool update_telemetry);
   void update_body_elipsoid(const State& s);
@@ -162,7 +164,7 @@ private:
   void update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3d& bRm0, const Eigen::Vector3d& bpm0, const Eigen::Matrix3d& bRmi, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& bvm0, const Eigen::Vector3d& bam0, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double omega2, const double dy);
   void update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_dot_i, const Eigen::Matrix3d& bRsi, const Eigen::Vector3d& b_omega_b_theta, const Eigen::Vector3d& b_omega_dot_b_theta, const Eigen::Vector3d& omega_phi_psi, const Eigen::Vector3d& omega_dot_phi_psi);
 
-  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
+  template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL_POS)[14], const double (&ALPHA_STALL_NEG)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
   void update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, std::size_t idx0, std::size_t state_idx0, std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at, bool update_telemetry);
 
   template <std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
