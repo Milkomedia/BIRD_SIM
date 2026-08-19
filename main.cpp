@@ -206,7 +206,27 @@ int main(int argc, char** argv) {
         // for (std::size_t i=0; i<elrs_channels.size(); ++i) {std::printf(" %4u", static_cast<unsigned int>(elrs_channels[i]));}
         // std::putchar('\n'); std::fflush(stdout);
       }
-      if (!elrs_enabled) {for(std::size_t i=0; i<12; ++i){cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}}
+      if (!elrs_enabled) {
+        // for(std::size_t i=0; i<12; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
+        constexpr double FLAP_FREQ = 3.0;  // [Hz]
+        constexpr double FLAP_AMP  = M_PI / 2.0;  // [rad]
+
+        const double flap = FLAP_AMP * std::sin(2.0 * M_PI * FLAP_FREQ * static_cast<double>(sim_data->time));
+        cmd.theta[0] = param::INITIAL_DES_THETA[0] + flap;
+        cmd.theta[1] = param::INITIAL_DES_THETA[1];
+        cmd.theta[2] = static_cast<double>(viewer_data.theta_d[2]);
+        cmd.theta[3] = static_cast<double>(viewer_data.theta_d[3]);
+        cmd.theta[4] = J5_model(cmd.theta[2]);
+        cmd.theta[5] = static_cast<double>(viewer_data.theta_d[5]);
+        cmd.theta[6] = param::INITIAL_DES_THETA[6] + flap;
+        cmd.theta[7] = static_cast<double>(viewer_data.theta_d[7]);
+        cmd.theta[8] = param::INITIAL_DES_THETA[8];
+        cmd.theta[9] = static_cast<double>(viewer_data.theta_d[9]);
+        cmd.theta[10] = J5_model(cmd.theta[8]);
+        cmd.theta[11] = static_cast<double>(viewer_data.theta_d[11]);
+
+        s.vel_f = Eigen::Vector3d(-10.0, 0.0, 0.0);
+      }
 
       // --- Control and servo dynamics ---
       if (!reset_requested) {
@@ -411,6 +431,9 @@ int main(int argc, char** argv) {
     }
     if (elrs_enabled) {mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);}
     mj_forward(m, render_data);
+
+    const Eigen::Vector3d camera_target = param::NED_TO_FLU * copied_state.pos;
+    for (int axis = 0; axis < 3; ++axis) {mj_utils::g_camera.lookat[axis] = static_cast<mjtNum>(camera_target(axis));}
     
     mjv_updateScene(m, render_data, &mj_utils::g_option, &mj_utils::g_perturb, &mj_utils::g_camera, mjCAT_ALL, &mj_utils::g_scene);
     mj_utils::highlight_selected_body();

@@ -633,12 +633,8 @@ namespace mj_utils {
     g_option.flags[mjVIS_PERTOBJ] = 0;
     g_option.flags[mjVIS_SELECT] = 1;
 
-    g_camera.type = mjCAMERA_TRACKING;
-    g_camera.trackbodyid = mj_name2id(g_model, mjOBJ_BODY, "body");
-
-    g_camera.lookat[0] = g_data->xpos[3*g_camera.trackbodyid + 0];
-    g_camera.lookat[1] = g_data->xpos[3*g_camera.trackbodyid + 1];
-    g_camera.lookat[2] = g_data->xpos[3*g_camera.trackbodyid + 2];
+    g_camera.type = mjCAMERA_FREE;
+    g_camera.trackbodyid = -1;
 
     g_camera.distance = 20.0;
     g_camera.azimuth = 120.0;
