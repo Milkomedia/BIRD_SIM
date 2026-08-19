@@ -490,6 +490,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
   constexpr double HALF_RHO = 0.5 * param::AIR_DENSITY;
   constexpr double QUARTER_PI_RHO = 0.7853981633974483 * param::AIR_DENSITY;
   constexpr double INV_KINEMATIC_VISCOSITY = 1.0 / param::AIR_KINEMATIC_VISCOSITY;
+  constexpr std::size_t ZERO_ALPHA_IDX = 50;
 
   Eigen::Vector3d force_accum = Eigen::Vector3d::Zero(); // body FRD
   Eigen::Vector3d moment_accum = Eigen::Vector3d::Zero(); // body FRD
@@ -527,9 +528,6 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     double X_eq = 1.0;
     double X = 1.0;
     double X_target = 1.0;
-    double tau1 = 0.0;
-    double tau2 = 0.0;
-    double stall_activity = 0.0;
     double qS = 0.0;
     double Fx_lut = 0.0;
     double Fz_lut = 0.0;
@@ -572,11 +570,18 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
 
       const bool valid_gk_sample = U >= GK_MIN_SPEED;
       const double state_alpha = valid_gk_sample || !dynamic_stall.state_initialized ? alpha : dynamic_stall.alpha;
+      const double neutral_X = X0[ZERO_ALPHA_IDX][Re_idx] + k_Re*(X0[ZERO_ALPHA_IDX][Re_idx+1]-X0[ZERO_ALPHA_IDX][Re_idx]);
       std::array<double, 2> X_eq_surface = dynamic_stall.X_eq;
       if (valid_gk_sample || !dynamic_stall.state_initialized) {
-        // Each state follows its suction-side X0 branch and relaxes toward X0(0) on the pressure side.
-        X_eq_surface[UPPER_SURFACE] = lookup_X0(std::max(state_alpha, 0.0));
-        X_eq_surface[LOWER_SURFACE] = lookup_X0(std::min(state_alpha, 0.0));
+        // Only the suction-side branch needs an alpha lookup; the pressure side relaxes to X0(0).
+        if (state_alpha >= 0.0) {
+          X_eq_surface[UPPER_SURFACE] = lookup_X0(state_alpha);
+          X_eq_surface[LOWER_SURFACE] = neutral_X;
+        }
+        else {
+          X_eq_surface[UPPER_SURFACE] = neutral_X;
+          X_eq_surface[LOWER_SURFACE] = lookup_X0(state_alpha);
+        }
       }
 
       const bool advance_gk = valid_gk_sample && dynamic_stall.state_initialized && dynamic_stall.alpha_initialized;
@@ -598,7 +603,6 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
         alpha_dot = delta_alpha * INV_DT;
 
         const double relaxation_gain = -std::expm1(-U*param::SIM_DT_SEC/(GK_D1*c));
-        const double neutral_X = lookup_X0(0.0);
         for (std::size_t surface=0; surface<2; ++surface) {
           const double surface_sign = surface == UPPER_SURFACE ? 1.0 : -1.0;
           const double beta = surface_sign*alpha;
@@ -652,11 +656,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       const std::array<double, 2>& effective_X_eq = dynamic_stall.state_initialized ? dynamic_stall.X_eq : X_eq_surface;
       X_eq = blend_surface(effective_X_eq, upper_weight);
       X = dynamic_stall.state_initialized ? blend_surface(dynamic_stall.X, upper_weight) : X_eq;
-      X_target = dynamic_stall.state_initialized ? blend_surface(dynamic_stall.X_target, upper_weight) : X_eq;
-      tau1 = GK_D1*c/U;
-      // D2 is latched per surface; tau2 is only its instantaneous dimensional telemetry equivalent.
-      tau2 = c/U*std::max(dynamic_stall.D2[UPPER_SURFACE], dynamic_stall.D2[LOWER_SURFACE]);
-      stall_activity = dynamic_stall.active[UPPER_SURFACE] || dynamic_stall.active[LOWER_SURFACE] ? 1.0 : 0.0;
+      if (update_telemetry) {X_target = dynamic_stall.state_initialized ? blend_surface(dynamic_stall.X_target, upper_weight) : X_eq;}
 
       const double one_plus_sqrt_X    = 1.0 + std::sqrt(X);
       const double one_plus_sqrt_X_eq = 1.0 + std::sqrt(X_eq);
@@ -678,8 +678,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
         const double upper_weight = upper_surface_weight(dynamic_stall.alpha);
         X_eq = blend_surface(dynamic_stall.X_eq, upper_weight);
         X = blend_surface(dynamic_stall.X, upper_weight);
-        X_target = blend_surface(dynamic_stall.X_target, upper_weight);
-        stall_activity = dynamic_stall.active[UPPER_SURFACE] || dynamic_stall.active[LOWER_SURFACE] ? 1.0 : 0.0;
+        if (update_telemetry) {X_target = blend_surface(dynamic_stall.X_target, upper_weight);}
       }
     }
 
@@ -727,14 +726,20 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       aero_telemetry_.X_eq[state_idx] = X_eq;
       aero_telemetry_.X[state_idx] = X;
       aero_telemetry_.X_target[state_idx] = X_target;
-      aero_telemetry_.tau1[state_idx] = tau1;
-      aero_telemetry_.tau2[state_idx] = tau2;
-      aero_telemetry_.stall_active[state_idx] = stall_activity;
+      if (U > 0.0 && c > 0.0) {
+        aero_telemetry_.tau1[state_idx] = GK_D1*c/U;
+        // D2 is latched per surface; tau2 is only its instantaneous dimensional telemetry equivalent.
+        aero_telemetry_.tau2[state_idx] = c/U*std::max(dynamic_stall.D2[UPPER_SURFACE], dynamic_stall.D2[LOWER_SURFACE]);
+      }
+      else {
+        aero_telemetry_.tau1[state_idx] = 0.0;
+        aero_telemetry_.tau2[state_idx] = 0.0;
+      }
+      aero_telemetry_.stall_active[state_idx] = dynamic_stall.active[UPPER_SURFACE] || dynamic_stall.active[LOWER_SURFACE] ? 1.0 : 0.0;
       aero_telemetry_.lut_force[state_idx] = bF_lut;
       aero_telemetry_.dynamic_force[state_idx] = bF_dynamic;
       aero_telemetry_.added_bias_force[state_idx] = bF_added;
       aero_telemetry_.lut_moment[state_idx] = bM_lut;
-      aero_telemetry_.dynamic_moment[state_idx].setZero();
       aero_telemetry_.added_bias_moment[state_idx] = bM_added;
     }
   }
@@ -916,8 +921,6 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         const Eigen::Vector3d bvh0 = bvj_h + b_omega_b_theta_h.cross(drho0);
         const Eigen::Vector3d bah0 = baj_h + b_omega_dot_b_theta_h.cross(drho0) + b_omega_b_theta_h*b_omega_b_theta_h.dot(drho0) - omega2*drho0;
         update_Rz_psi(bRhi, humerus_rotation.sin_psi[0], humerus_rotation.cos_psi[0], humerus_rotation.psi_dot[0], humerus_rotation.psi_ddot[0], bRsec_y, bRh0, omega_theta_sec, omega_dot_theta_sec, omega_theta_h, omega_dot_theta_h);
-        humerus_rotation.sin_phi[0] = 0.0;
-        humerus_rotation.cos_phi[0] = 1.0;
         update_humerus_stream_p_v_a(wing*param::NH, bRh0, bph0, bRhi, RtVrel, RtArel, bvh0, bah0, b_omega_b_theta_h, b_omega_dot_b_theta_h, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_H);
       }
       
@@ -932,8 +935,6 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         const Eigen::Vector3d bvm0 = bvj_m + b_omega_b_theta_m.cross(drho0);
         const Eigen::Vector3d bam0 = baj_m + b_omega_dot_b_theta_m.cross(drho0) + b_omega_b_theta_m*b_omega_b_theta_m.dot(drho0) - omega2*drho0;
         update_Rz_psi(bRmi, manus_rotation.sin_psi[0], manus_rotation.cos_psi[0], manus_rotation.psi_dot[0], manus_rotation.psi_ddot[0], bRsec_y, bRm0, omega_theta_sec, omega_dot_theta_sec, omega_theta_m, omega_dot_theta_m);
-        manus_rotation.sin_phi[0] = 0.0;
-        manus_rotation.cos_phi[0] = 1.0;
         update_manus_stream_p_v_a(wing*param::NM, bRm0, bpm0, bRmi, RtVrel, RtArel, bvm0, bam0, b_omega_b_theta_m, b_omega_dot_b_theta_m, omega2, param::STRIP_SPAN_SIGN[wing]*param::DY_M);
       }
 

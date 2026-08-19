@@ -5,13 +5,10 @@
 
 #include <mujoco/mujoco.h>
 #include <vector>
-#include <cstdio>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <thread>
 #include <Eigen/Dense>
 
 struct State {
@@ -32,10 +29,8 @@ struct State {
 struct Command {
   Eigen::Vector3d pos   = Eigen::Vector3d::Zero();     // [m]
   Eigen::Vector3d vel   = Eigen::Vector3d::Zero();     // [m/s]
-  Eigen::Vector3d acc   = Eigen::Vector3d::Zero();     // [m/s^2]
   Eigen::Matrix3d R     = Eigen::Matrix3d::Identity(); // [SO3]
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();     // [rad/s]
-  Eigen::Vector3d w_dot = Eigen::Vector3d::Zero();     // [rad/s^2]
   std::array<double, 12> theta{};                      // [rad]
 };
 
@@ -56,36 +51,6 @@ struct SimData {
   std::array<Eigen::Vector3d, 7> aero_force{}; // [N], body FRD; [6] = body ellipsoid
   std::array<double, 12> theta_d{};
 };
-
-static inline Eigen::Matrix3d hat(const Eigen::Vector3d v){
-  Eigen::Matrix3d V;
-  V.setZero();
-
-  V(2,1) = v(0);
-  V(1,2) = -V(2, 1);
-  V(0,2) = v(1);
-  V(2,0) = -V(0, 2);
-  V(1,0) = v(2);
-  V(0,1) = -V(1, 0);
-
-  return V;
-}
-
-static inline Eigen::Vector3d vee(const Eigen::Matrix3d V){
-  Eigen::Vector3d v;
-  Eigen::Matrix3d E;
-
-  v.setZero();
-  E = V + V.transpose();
-  
-  if(E.norm() > 1.e-6) {std::fprintf(stderr, "VEE: E.norm() = %.6f\n", E.norm());}
-
-  v(0) = V(2, 1);
-  v(1) = V(0, 2);
-  v(2) = V(1, 0);
-
-  return  v;
-}
 
 static inline Eigen::Matrix3d quat_to_R(const mjtNum* q) {
   // q: body FLU -> world FLU
@@ -146,15 +111,13 @@ static inline double J5_model(const double J3) {
   return -0.1356*J3*J3*J3 - 0.2059*J3*J3 + 0.1409*J3 + 0.1719;
 }
 
-static inline std::int64_t now_us() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 template <std::size_t N>
 inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<Eigen::Vector3d, N>& local_positions, const std::array<Eigen::Matrix<double, 6, 6>, N>& local_spatial_inertias, const std::array<int, N>& body_ids, const Eigen::Matrix3d& world_R_body, const Eigen::Vector3d& world_p_body, mjtNum* jac, mjtNum* inertia_jac) {
   const int nv = m->nv;
   mjtNum* const jacp = jac;
   mjtNum* const jacr = jac + 3*nv;
+  const Eigen::Matrix3d world_R_body_T = world_R_body.transpose();
+  Eigen::Matrix<double, 6, 6> world_spatial_inertia;
 
   for (std::size_t i=0; i<N; ++i) {
     const int body_id = body_ids[i];
@@ -164,27 +127,17 @@ inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<E
     const mjtNum point_mj[3] = {static_cast<mjtNum>(point(0)), static_cast<mjtNum>(point(1)), static_cast<mjtNum>(point(2))};
     mj_jac(m, d, jacp, jacr, point_mj, body_id);
 
-    // Express the world-frame Jacobian in the supplied body-local frame.
-    for (int col=0; col<nv; ++col) {
-      const mjtNum jpx = jacp[col];
-      const mjtNum jpy = jacp[nv+col];
-      const mjtNum jpz = jacp[2*nv+col];
-      const mjtNum jrx = jacr[col];
-      const mjtNum jry = jacr[nv+col];
-      const mjtNum jrz = jacr[2*nv+col];
-
-      jacp[col]      = static_cast<mjtNum>(world_R_body(0,0))*jpx + static_cast<mjtNum>(world_R_body(1,0))*jpy + static_cast<mjtNum>(world_R_body(2,0))*jpz;
-      jacp[nv+col]   = static_cast<mjtNum>(world_R_body(0,1))*jpx + static_cast<mjtNum>(world_R_body(1,1))*jpy + static_cast<mjtNum>(world_R_body(2,1))*jpz;
-      jacp[2*nv+col] = static_cast<mjtNum>(world_R_body(0,2))*jpx + static_cast<mjtNum>(world_R_body(1,2))*jpy + static_cast<mjtNum>(world_R_body(2,2))*jpz;
-      jacr[col]      = static_cast<mjtNum>(world_R_body(0,0))*jrx + static_cast<mjtNum>(world_R_body(1,0))*jry + static_cast<mjtNum>(world_R_body(2,0))*jrz;
-      jacr[nv+col]   = static_cast<mjtNum>(world_R_body(0,1))*jrx + static_cast<mjtNum>(world_R_body(1,1))*jry + static_cast<mjtNum>(world_R_body(2,1))*jrz;
-      jacr[2*nv+col] = static_cast<mjtNum>(world_R_body(0,2))*jrx + static_cast<mjtNum>(world_R_body(1,2))*jry + static_cast<mjtNum>(world_R_body(2,2))*jrz;
+    // Rotate the 6x6 spatial inertia once instead of rotating every Jacobian column.
+    for (int block_row=0; block_row<2; ++block_row) {
+      for (int block_col=0; block_col<2; ++block_col) {
+        world_spatial_inertia.block<3, 3>(3*block_row, 3*block_col).noalias() = world_R_body * local_spatial_inertias[i].template block<3, 3>(3*block_row, 3*block_col) * world_R_body_T;
+      }
     }
 
     for (int row=0; row<6; ++row) {
       for (int col=0; col<nv; ++col) {
         mjtNum value = 0;
-        for (int k=0; k<6; ++k) {value += static_cast<mjtNum>(local_spatial_inertias[i](row,k))*jac[k*nv+col];}
+        for (int k=0; k<6; ++k) {value += static_cast<mjtNum>(world_spatial_inertia(row,k))*jac[k*nv+col];}
         inertia_jac[row*nv+col] = value;
       }
     }

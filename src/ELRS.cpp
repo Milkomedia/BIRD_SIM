@@ -4,6 +4,7 @@
 
 #include <sys/ioctl.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -56,14 +57,27 @@ bool ELRS::update(Channels& channels) {
   if (fd_ < 0) {last_error_ = "serial device is not open"; return false;}
 
   bool rc_frame_updated = false;
-  std::array<std::uint8_t, 512U> read_buffer{};
+  std::array<std::uint8_t, 512U> read_buffer;
 
   for (;;) {
     const ssize_t received = ::read(fd_, read_buffer.data(), read_buffer.size());
 
     if (received > 0) {
-      for (ssize_t i=0; i<received; ++i) {
-        append_byte(read_buffer[static_cast<std::size_t>(i)]);
+      std::size_t offset = 0U;
+      const std::size_t received_size = static_cast<std::size_t>(received);
+      while (offset < received_size) {
+        if (stream_size_ == stream_.size()) {
+          rc_frame_updated = parse_stream() || rc_frame_updated;
+          if (stream_size_ == stream_.size()) {
+            discard_prefix(1U);
+            ++dropped_bytes_;
+          }
+        }
+
+        const std::size_t copy_size = std::min(received_size-offset, stream_.size()-stream_size_);
+        std::memcpy(stream_.data()+stream_size_, read_buffer.data()+offset, copy_size);
+        stream_size_ += copy_size;
+        offset += copy_size;
         rc_frame_updated = parse_stream() || rc_frame_updated;
       }
       continue;
@@ -130,15 +144,6 @@ bool ELRS::configure_uart() {
   }
 
   return true;
-}
-
-void ELRS::append_byte(const std::uint8_t byte) {
-  if (stream_size_ == stream_.size()) {
-    discard_prefix(1U);
-    ++dropped_bytes_;
-  }
-
-  stream_[stream_size_++] = byte;
 }
 
 bool ELRS::parse_stream() {

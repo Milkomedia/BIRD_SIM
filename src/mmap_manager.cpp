@@ -66,7 +66,6 @@ constexpr std::uint8_t DTYPE_FLOAT32 = 1;
   X("strip.added_bias_force",       "N",       "body FRD",  offsetof(SampleData, strip_added_bias_force),      NUM_STRIPS, 3) \
   X("strip.added_full_force",       "N",       "body FRD",  offsetof(SampleData, strip_added_full_force),      NUM_STRIPS, 3) \
   X("strip.lut_moment",             "N.m",     "body FRD",  offsetof(SampleData, strip_lut_moment),            NUM_STRIPS, 3) \
-  X("strip.dynamic_moment",         "N.m",     "body FRD",  offsetof(SampleData, strip_dynamic_moment),        NUM_STRIPS, 3) \
   X("strip.added_bias_moment",      "N.m",     "body FRD",  offsetof(SampleData, strip_added_bias_moment),     NUM_STRIPS, 3) \
   X("strip.added_full_moment",      "N.m",     "body FRD",  offsetof(SampleData, strip_added_full_moment),     NUM_STRIPS, 3)
 
@@ -200,7 +199,7 @@ void MMapLogger::close() {
   map_size_ = 0;
 }
 
-void MMapLogger::push(const double time, const std::uint64_t step, const std::uint64_t reset_epoch, const bool paused, const double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque) {
+void MMapLogger::push(const double time, const std::uint64_t step, const std::uint64_t reset_epoch, const double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque) {
   if (!base_) {open();}
 
   const std::uint64_t write_count = atomic_load(&header_->write_count);
@@ -212,8 +211,7 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   data.time = time;
   data.step = step;
   data.reset_epoch = reset_epoch;
-  data.flags = paused ? SAMPLE_PAUSED : 0u;
-  if (full_added_time >= 0.0) {data.flags |= SAMPLE_FULL_ADDED_VALID;}
+  data.flags = full_added_time >= 0.0 ? SAMPLE_FULL_ADDED_VALID : 0u;
   data.full_added_time = static_cast<float>(full_added_time);
 
   copy_vector(data.state_pos, s.pos);
@@ -267,7 +265,6 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   copy_vector(data.strip_added_bias_force, aero.added_bias_force);
   copy_vector(data.strip_added_full_force, aero.added_full_force);
   copy_vector(data.strip_lut_moment, aero.lut_moment);
-  copy_vector(data.strip_dynamic_moment, aero.dynamic_moment);
   copy_vector(data.strip_added_bias_moment, aero.added_bias_moment);
   copy_vector(data.strip_added_full_moment, aero.added_full_moment);
 

@@ -96,7 +96,6 @@ public:
     std::array<Eigen::Vector3d, NUM_STRIPS> added_bias_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> added_full_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> lut_moment{};
-    std::array<Eigen::Vector3d, NUM_STRIPS> dynamic_moment{};
     std::array<Eigen::Vector3d, NUM_STRIPS> added_bias_moment{};
     std::array<Eigen::Vector3d, NUM_STRIPS> added_full_moment{};
 
@@ -108,7 +107,7 @@ public:
       tau1.fill(0.0); tau2.fill(0.0); stall_active.fill(0.0);
       lut_force.fill(zero); dynamic_force.fill(zero);
       added_bias_force.fill(zero); added_full_force.fill(zero);
-      lut_moment.fill(zero); dynamic_moment.fill(zero);
+      lut_moment.fill(zero);
       added_bias_moment.fill(zero); added_full_moment.fill(zero);
     }
   };

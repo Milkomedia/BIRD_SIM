@@ -23,6 +23,40 @@
 
 static std::atomic<bool> g_stop{false};
 
+template <typename T, std::size_t N>
+class SpscMailbox {
+  static_assert(N >= 2, "SpscMailbox requires at least two slots.");
+
+ public:
+  bool push(const T& value) noexcept {
+    const std::size_t write = write_index_.load(std::memory_order_relaxed);
+    const std::size_t next = (write + 1) % N;
+    if (next == read_index_.load(std::memory_order_acquire)) {return false;}
+    slots_[write] = value;
+    write_index_.store(next, std::memory_order_release);
+    return true;
+  }
+
+  bool pop_latest(T& value) noexcept {
+    std::size_t read = read_index_.load(std::memory_order_relaxed);
+    const std::size_t write = write_index_.load(std::memory_order_acquire);
+    if (read == write) {return false;}
+
+    do {
+      value = slots_[read];
+      read = (read + 1) % N;
+    } while (read != write);
+
+    read_index_.store(read, std::memory_order_release);
+    return true;
+  }
+
+ private:
+  std::array<T, N> slots_{};
+  std::atomic<std::size_t> write_index_{0};
+  std::atomic<std::size_t> read_index_{0};
+};
+
 // ===== Main =====
 int main(int argc, char** argv) {
   // ---------------- [ Initialize MuJoCo and viewer ] ----------------
@@ -45,10 +79,22 @@ int main(int argc, char** argv) {
 
   std::array<int, 12> servo_qpos_address{};
   std::array<int, 12> servo_qvel_address{};
+  std::array<double, 12> servo_ctrl_min{};
+  std::array<double, 12> servo_ctrl_max{};
   for (std::size_t i=0; i<12; ++i) {
-    const int joint_id = m->actuator_trnid[2 * mj_utils::g_actuator_ids[i]];
+    const int actuator_id = mj_utils::g_actuator_ids[i];
+    const int joint_id = m->actuator_trnid[2 * actuator_id];
     servo_qpos_address[i] = m->jnt_qposadr[joint_id];
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
+    if (m->actuator_ctrllimited[actuator_id]) {
+      servo_ctrl_min[i] = static_cast<double>(m->actuator_ctrlrange[2 * actuator_id]);
+      servo_ctrl_max[i] = static_cast<double>(m->actuator_ctrlrange[2 * actuator_id + 1]);
+    }
+    else {
+      const std::size_t motor_idx = i % param::MOTOR_MAX_TORQUE.size();
+      servo_ctrl_min[i] = -param::MOTOR_MAX_TORQUE[motor_idx];
+      servo_ctrl_max[i] =  param::MOTOR_MAX_TORQUE[motor_idx];
+    }
   }
 
   constexpr std::array<const char*, 6> wing_plate_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
@@ -67,10 +113,13 @@ int main(int argc, char** argv) {
   mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);
 
   // ---------------- [ Shared mailboxes ] ----------------
-  std::mutex viewer_mtx;
-  ViewerData shared_viewer_data{};
-  shared_viewer_data.theta_d = mj_utils::g_command_theta;
-  shared_viewer_data.perturb = mj_utils::g_perturb;
+  SpscMailbox<ViewerData, 8> viewer_mailbox;
+  ViewerData initial_viewer_data{};
+  initial_viewer_data.theta_d = mj_utils::g_command_theta;
+  initial_viewer_data.perturb = mj_utils::g_perturb;
+  initial_viewer_data.paused = mj_utils::g_paused;
+  initial_viewer_data.reset_epoch = mj_utils::g_reset_epoch;
+  (void)viewer_mailbox.push(initial_viewer_data);
 
   std::mutex sim_mtx;
   SimData shared_sim_data{std::vector<mjtNum>(static_cast<std::size_t>(m->nq)), std::vector<mjtNum>(static_cast<std::size_t>(m->nv))};
@@ -119,7 +168,7 @@ int main(int argc, char** argv) {
       motor_parameters[i].kD = param::MOTOR_KD[i];
       motor_parameters[i].dt = param::MOTOR_DT[i];
     }
-    for (std::size_t i=0; i<12; ++i) {servo.emplace_back(m, mj_utils::kActuatorNames[i], motor_parameters[i % motor_parameters.size()]);}
+    for (std::size_t i=0; i<12; ++i) {servo.emplace_back(motor_parameters[i % motor_parameters.size()], servo_ctrl_min[i], servo_ctrl_max[i]);}
 
     MST mst{};
     bird_mmap::MMapLogger mmap_logger{};
@@ -149,10 +198,8 @@ int main(int argc, char** argv) {
     while (!g_stop.load(std::memory_order_acquire)) {
       next_tick += param::SIM_DT_US;
 
-      { // --- Copy viewer data ---
-        std::unique_lock<std::mutex> viewer_data_lk(viewer_mtx, std::try_to_lock);
-        if (viewer_data_lk.owns_lock()) {viewer_data = shared_viewer_data;}
-      }
+      // --- Consume the newest viewer command without locking the sim thread. ---
+      (void)viewer_mailbox.pop_latest(viewer_data);
 
       // --- Check reset request ---
       const bool reset_requested = viewer_data.reset_epoch != handled_reset_epoch;
@@ -230,25 +277,13 @@ int main(int argc, char** argv) {
 
       // --- Control and servo dynamics ---
       if (!reset_requested) {
-
-        // --- MuJoCo simulation step1 ---
         mju_zero(sim_data->xfrc_applied, 6*m->nbody);
         mju_zero(sim_data->qfrc_applied, m->nv);
         mjv_applyPerturbPose(m, sim_data, &viewer_data.perturb, viewer_data.paused);
-        if (!viewer_data.paused) {mj_step1(m, sim_data);}
-
-        // --- Servo dyn calc ---
-        for(std::size_t i=0; i<12; ++i) {
-          servo[i].desired_rad = cmd.theta[i];
-          servo[i].step(*sim_data);
-          servo_torque[i] = servo[i].motor_state.torque;
-        }
-
-        // --- MuJoCo simulation step2 ---
-        mjv_applyPerturbForce(m, sim_data, &viewer_data.perturb);
 
         if (!viewer_data.paused) {
-          for (std::size_t i=0; i<12; ++i) {sim_data->ctrl[servo[i].actuatorId()] = static_cast<mjtNum>(servo[i].motor_state.torque);}
+          // --- MuJoCo simulation step1 ---
+          mj_step1(m, sim_data);
 
           { // --- Position/velocity state at t_k ---
             s.pos(0) = static_cast<double>( sensor_pos[0]);
@@ -266,10 +301,17 @@ int main(int argc, char** argv) {
               s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
               s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
             }
-
-            FK(s.theta, s.bTj);
-            mst.update_dynamics(s, log_due);
           }
+
+          // Servo is simulator-agnostic: feed it only the joint state.
+          for (std::size_t i=0; i<12; ++i) {
+            servo[i].desired_rad = cmd.theta[i];
+            servo[i].step(s.theta[i], s.theta_dot[i]);
+            sim_data->ctrl[mj_utils::g_actuator_ids[i]] = static_cast<mjtNum>(servo[i].motor_state.torque);
+          }
+
+          FK(s.theta, s.bTj);
+          mst.update_dynamics(s, log_due);
 
           const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
           const Eigen::Vector3d Gpb_FLU = param::NED_TO_FLU * s.pos;
@@ -278,6 +320,7 @@ int main(int argc, char** argv) {
           add_spatial_inertias(m, sim_data, mst.added_mass_positions(), mst.added_mass_matrices(), wing_plate_ids, GRb_FLU, Gpb_FLU, added_mass_jac.data(), added_mass_inertia_jac.data());
 
           // Apply current t_k aerodynamic wrenches.
+          mjv_applyPerturbForce(m, sim_data, &viewer_data.perturb);
           const std::array<Eigen::Vector3d, 7>& bp = mst.positions();
           const std::array<Eigen::Vector3d, 7>& bF = mst.forces();
           const std::array<Eigen::Vector3d, 7>& bT = mst.torques();
@@ -293,6 +336,7 @@ int main(int argc, char** argv) {
             mj_applyFT(m, sim_data, force, torque, point, target_body_id, sim_data->qfrc_applied);
           }
 
+          const double sample_time = static_cast<double>(sim_data->time);
           if (snapshot_due) {
             std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
             std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
@@ -301,6 +345,7 @@ int main(int argc, char** argv) {
             applied_aero_force = mst.forces();
           }
 
+          // --- MuJoCo simulation step2 ---
           mj_step2(m, sim_data);
 
           { // --- Acceleration state solved at t_k ---
@@ -309,14 +354,19 @@ int main(int argc, char** argv) {
             s.acc(2) = static_cast<double>(-sensor_acc[2]);
             s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
             for (std::size_t i=0; i<12; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
-            if (snapshot_due) {
+
+            // Keep qddot-dependent added-mass telemetry synchronized to every log sample.
+            if (snapshot_due || log_due) {
               mst.update_visualization(s);
-              full_added_time = static_cast<double>(sim_data->time);
+              full_added_time = sample_time;
             }
           }
 
           ++sim_step;
-          if (log_due) {mmap_logger.push(static_cast<double>(sim_data->time), sim_step, handled_reset_epoch, false, full_added_time, s, cmd, mst, servo_torque);}
+          if (log_due) {
+            for (std::size_t i=0; i<12; ++i) {servo_torque[i] = servo[i].motor_state.torque;}
+            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, full_added_time, s, cmd, mst, servo_torque);
+          }
         }
       }
       if (snapshot_due && (reset_requested || viewer_data.paused)) {
@@ -400,10 +450,8 @@ int main(int argc, char** argv) {
     viewer_data.paused = mj_utils::g_paused;
     viewer_data.reset_epoch = mj_utils::g_reset_epoch;
     
-    { // Publish data
-      std::lock_guard<std::mutex> viewer_data_lk(viewer_mtx);
-      shared_viewer_data = viewer_data;
-    }
+    // Drop this viewer-rate publication only if the SPSC queue is temporarily full.
+    (void)viewer_mailbox.push(viewer_data);
 
     { // Copy data
       std::lock_guard<std::mutex> snapshot_lk(sim_mtx);

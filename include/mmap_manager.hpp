@@ -15,7 +15,7 @@ class MST;
 namespace bird_mmap {
 
 inline constexpr std::uint32_t LOG_HZ = 250;
-inline constexpr std::uint32_t LOG_SECONDS = 20;
+inline constexpr std::uint32_t LOG_SECONDS = 5;
 inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
 inline constexpr std::size_t NUM_JOINTS = 12;
 inline constexpr std::size_t NUM_SEGMENTS = 6;
@@ -26,7 +26,6 @@ static_assert(LOG_DECIMATION > 0, "Invalid mmap logging decimation.");
 static_assert(LOG_DECIMATION * LOG_HZ * std::chrono::duration_cast<std::chrono::microseconds>(param::SIM_DT_US).count() == 1000000, "LOG_HZ must divide the simulation rate exactly.");
 
 enum SampleFlags : std::uint32_t {
-  SAMPLE_PAUSED = 1u << 0,
   SAMPLE_FULL_ADDED_VALID = 1u << 1
 };
 
@@ -80,7 +79,6 @@ struct SampleData {
   float strip_added_bias_force[NUM_STRIPS][3]{};
   float strip_added_full_force[NUM_STRIPS][3]{};
   float strip_lut_moment[NUM_STRIPS][3]{};
-  float strip_dynamic_moment[NUM_STRIPS][3]{};
   float strip_added_bias_moment[NUM_STRIPS][3]{};
   float strip_added_full_moment[NUM_STRIPS][3]{};
 };
@@ -145,7 +143,7 @@ public:
 
   void open();
   void close();
-  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, bool paused, double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque);
+  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque);
 
 private:
   std::string path_;

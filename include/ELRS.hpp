@@ -60,7 +60,6 @@ private:
   std::uint64_t dropped_bytes_ = 0U;
 
   bool configure_uart();
-  void append_byte(std::uint8_t byte);
   bool parse_stream();
   void discard_prefix(std::size_t count);
 

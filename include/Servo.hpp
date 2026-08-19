@@ -1,10 +1,5 @@
 #pragma once
 
-#include <mujoco/mujoco.h>
-
-#include <cstdint>
-#include <string>
-
 namespace Actuator {
 
 struct MotorParameters {
@@ -39,31 +34,22 @@ class Servo {
   double desired_rad = 0.0;
   MotorState motor_state;
 
-  Servo(
-    const mjModel* model,
-    const std::string& actuator_name,
-    MotorParameters motor_parameters = {}
-  );
+  Servo(MotorParameters motor_parameters, double control_min_torque, double control_max_torque);
 
   void reset();
-  void step(const mjData& data);
-
-  std::int32_t actuatorId() const noexcept;
+  void step(double theta, double theta_dot);
 
  private:
   MotorParameters motor_;
 
-  std::int32_t actuator_id_ = -1;
-  std::int32_t joint_id_ = -1;
-  std::int32_t qpos_address_ = -1;
-  std::int32_t qvel_address_ = -1;
-
-  double ctrl_min_ = 0.0;
-  double ctrl_max_ = 0.0;
-
   double current_ = 0.0;
   double current_decay_ = 0.6;
-  double previous_time_ = 0.0;
+  double torque_per_amp_ = 0.0;
+  double inv_torque_per_amp_ = 0.0;
+  double back_emf_per_joint_rad_s_ = 0.0;
+  double inv_ohm_ = 0.0;
+  double minimum_torque_ = 0.0;
+  double maximum_torque_ = 0.0;
 };
 
 } // namespace Actuator
