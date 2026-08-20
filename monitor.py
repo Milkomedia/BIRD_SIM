@@ -733,24 +733,33 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"flow.{name}", time, channels[f"strip.{name}"][:, index])
 
   def _update_strip_loads(self) -> None:
-    names = tuple(f"strip.{name}_{kind}" for kind in ("force", "moment") for name in ("lut", "dynamic", "added_bias", "added_full"))
+    force_contributions = ("lut", "dynamic", "added_bias", "added_full")
+    moment_contributions = ("lut", "added_bias", "added_full")
+    names = tuple([f"strip.{name}_force" for name in force_contributions] + [f"strip.{name}_moment" for name in moment_contributions])
+
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
     if time.size == 0: return
     index = self._strip_index()
+
     for kind in ("force", "moment"):
       row_series: List[List[np.ndarray]] = []
+
       for axis in range(3):
         axis_series: List[np.ndarray] = []
         total = np.zeros(time.shape, dtype=np.float32)
-        for contribution in ("lut", "dynamic", "added_bias", "added_full"):
-          values = channels[f"strip.{contribution}_{kind}"][:, index, axis]
+
+        for contribution in force_contributions:
+          if kind == "moment" and contribution == "dynamic": values = np.zeros(time.shape, dtype=np.float32)
+          else: values = channels[f"strip.{contribution}_{kind}"][:, index, axis]
           self._set_curve(f"load.{kind}.{axis}.{contribution}", time, values)
           axis_series.append(values)
           total += values
+
         self._set_curve(f"load.{kind}.{axis}.total", time, total)
         axis_series.append(total)
         row_series.append(axis_series)
+
       set_common_y_scale([self.load_plots[(kind, axis)] for axis in range(3)], row_series)
 
   def _update_aggregate(self) -> None:
