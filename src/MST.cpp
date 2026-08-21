@@ -13,6 +13,7 @@ void MST::reset() {
   strip_state_.reset();
   aero_telemetry_.reset();
   for (DynamicStallState& state : dynamic_stall_state_) {state = {};}
+  for (std::array<double, 2>& state : wagner_state_) {state = {};}
   aero_pos_.fill(zero);
   aero_force_.fill(zero);
   aero_torque_.fill(zero);
@@ -486,11 +487,30 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
   constexpr double GK_MIN_SPEED = 0.1;
   constexpr double GK_SURFACE_BLEND_ANGLE = DEG_TO_RAD;
   constexpr double GK_REATTACH_TOLERANCE = 0.02;
+  constexpr double WAGNER_A1 = 0.165;
+  constexpr double WAGNER_A2 = 0.335;
+  constexpr double WAGNER_EPS1 = 0.0455;
+  constexpr double WAGNER_EPS2 = 0.3;
+  constexpr double WAGNER_PHI0 = 1.0-WAGNER_A1-WAGNER_A2;
+  constexpr double WAGNER_MIN_LIFT_SLOPE = 1.0e-6;
+  constexpr std::size_t WAGNER_SLOPE_OFFSET = 5; // +/-1 deg around alpha=0
   constexpr double INV_DT = 1.0 / param::SIM_DT_SEC;
   constexpr double HALF_RHO = 0.5 * param::AIR_DENSITY;
   constexpr double QUARTER_PI_RHO = 0.7853981633974483 * param::AIR_DENSITY;
   constexpr double INV_KINEMATIC_VISCOSITY = 1.0 / param::AIR_KINEMATIC_VISCOSITY;
   constexpr std::size_t ZERO_ALPHA_IDX = 50;
+
+  static const std::array<std::array<double, 14>, 2> wagner_airfoil = []() {
+    std::array<std::array<double, 14>, 2> result{};
+    for (std::size_t j=0; j<14; ++j) {
+      const double lift_slope = (CL[ZERO_ALPHA_IDX+WAGNER_SLOPE_OFFSET][j]-CL[ZERO_ALPHA_IDX-WAGNER_SLOPE_OFFSET][j])/(2.0*DEG_TO_RAD);
+      if (lift_slope > WAGNER_MIN_LIFT_SLOPE) {
+        result[0][j] = lift_slope;
+        result[1][j] = -CL[ZERO_ALPHA_IDX][j]/lift_slope;
+      }
+    }
+    return result;
+  }();
 
   Eigen::Vector3d force_accum = Eigen::Vector3d::Zero(); // body FRD
   Eigen::Vector3d moment_accum = Eigen::Vector3d::Zero(); // body FRD
@@ -507,6 +527,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     const std::size_t idx = idx0+i;
     const std::size_t state_idx = state_idx0+i;
     DynamicStallState& dynamic_stall = dynamic_stall_state_[state_idx];
+    std::array<double, 2>& wagner_state = wagner_state_[state_idx];
     const double c = chord_at(i);
     const double dy = width_at(i);
     const double area = c * dy;
@@ -524,7 +545,14 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     double Cd = 0.0;
     double Cl_lut = 0.0;
     double Cl_dynamic = 0.0;
+    double Cl_wagner = 0.0;
     double Cm = 0.0;
+    double wagner_input = 0.0;
+    const double wagner_z1 = wagner_state[0];
+    const double wagner_z2 = wagner_state[1];
+    double wagner_output = WAGNER_A1*wagner_z1 + WAGNER_A2*wagner_z2;
+    double wagner_delta_downwash = 0.0;
+    double wagner_lift_slope = 0.0;
     double X_eq = 1.0;
     double X = 1.0;
     double X_target = 1.0;
@@ -534,6 +562,8 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     double My_lut = 0.0;
     double Fx_dynamic = 0.0;
     double Fz_dynamic = 0.0;
+    double Fx_wagner = 0.0;
+    double Fz_wagner = 0.0;
 
     const auto upper_surface_weight = [](const double angle) {
       const double coordinate = std::clamp(0.5*(angle/GK_SURFACE_BLEND_ANGLE + 1.0), 0.0, 1.0);
@@ -560,6 +590,20 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       Cd     = param::coeff::bilinear_interpolate(CD, alpha_idx, Re_idx, k_alpha, k_Re);
       Cl_lut = param::coeff::bilinear_interpolate(CL, alpha_idx, Re_idx, k_alpha, k_Re);
       Cm     = param::coeff::bilinear_interpolate(CM, alpha_idx, Re_idx, k_alpha, k_Re);
+
+      const double alpha_zero_lift = wagner_airfoil[1][Re_idx] + k_Re*(wagner_airfoil[1][Re_idx+1]-wagner_airfoil[1][Re_idx]);
+      wagner_lift_slope = wagner_airfoil[0][Re_idx] + k_Re*(wagner_airfoil[0][Re_idx+1]-wagner_airfoil[0][Re_idx]);
+
+      const double wagner_alpha_downwash = vz-vx*alpha_zero_lift;
+      wagner_input = wagner_alpha_downwash + 0.5*c*omega_y;
+      wagner_output = WAGNER_PHI0*wagner_input + WAGNER_A1*wagner_z1 + WAGNER_A2*wagner_z2;
+      wagner_delta_downwash = wagner_output-wagner_alpha_downwash;
+
+      const double delta_tau = 2.0*U*param::SIM_DT_SEC/c;
+      const double gain1 = -std::expm1(-WAGNER_EPS1*delta_tau);
+      const double gain2 = -std::expm1(-WAGNER_EPS2*delta_tau);
+      wagner_state[0] += gain1*(wagner_input-wagner_state[0]);
+      wagner_state[1] += gain2*(wagner_input-wagner_state[1]);
 
       const auto lookup_X0 = [&Re_idx, &k_Re](const double lookup_alpha) {
         std::size_t lookup_idx;
@@ -660,8 +704,12 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
 
       const double one_plus_sqrt_X    = 1.0 + std::sqrt(X);
       const double one_plus_sqrt_X_eq = 1.0 + std::sqrt(X_eq);
-      Cl_dynamic = Cl_lut * (one_plus_sqrt_X*one_plus_sqrt_X)/(one_plus_sqrt_X_eq*one_plus_sqrt_X_eq);
+      const double kirchhoff_X = 0.25*one_plus_sqrt_X*one_plus_sqrt_X;
+      const double kirchhoff_X_eq = 0.25*one_plus_sqrt_X_eq*one_plus_sqrt_X_eq;
+      const double kirchhoff_ratio = kirchhoff_X/kirchhoff_X_eq;
+      Cl_dynamic = Cl_lut * kirchhoff_ratio;
       const double delta_Cl = Cl_dynamic - Cl_lut;
+      Cl_wagner = kirchhoff_ratio*wagner_lift_slope*wagner_delta_downwash/U;
 
       const double k_f = HALF_RHO * U * area;
       qS = k_f * U;
@@ -670,6 +718,9 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       My_lut = qS * c * Cm;
       Fx_dynamic = -k_f * delta_Cl*vz;
       Fz_dynamic =  k_f * delta_Cl*vx;
+      const double k_wagner = HALF_RHO*area*kirchhoff_ratio*wagner_lift_slope*wagner_delta_downwash;
+      Fx_wagner = -k_wagner*vz;
+      Fz_wagner =  k_wagner*vx;
     }
     else {
       // Zero-speed intervals carry no convective time, so preserve separation memory across stroke reversal.
@@ -697,8 +748,9 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     const Eigen::Vector3d aerodynamic_center = p[idx] + quarter_chord;
     const Eigen::Vector3d bF_lut = Fx_lut*bRsi.col(0) + Fz_lut*bRsi.col(2);
     const Eigen::Vector3d bF_dynamic = Fx_dynamic*bRsi.col(0) + Fz_dynamic*bRsi.col(2);
+    const Eigen::Vector3d bF_wagner = Fx_wagner*bRsi.col(0) + Fz_wagner*bRsi.col(2);
     const Eigen::Vector3d bF_added = added_force*bRsi.col(2);
-    const Eigen::Vector3d bF = bF_lut + bF_dynamic + bF_added;
+    const Eigen::Vector3d bF = bF_lut + bF_dynamic + bF_wagner + bF_added;
     const Eigen::Vector3d bM_lut = My_lut*bRsi.col(1);
     const Eigen::Vector3d bM_added = added_moment*bRsi.col(1);
 
@@ -722,7 +774,12 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       aero_telemetry_.Cd[state_idx] = Cd;
       aero_telemetry_.Cl_lut[state_idx] = Cl_lut;
       aero_telemetry_.Cl_dynamic[state_idx] = Cl_dynamic;
+      aero_telemetry_.Cl_wagner[state_idx] = Cl_wagner;
       aero_telemetry_.Cm[state_idx] = Cm;
+      aero_telemetry_.wagner_input[state_idx] = wagner_input;
+      aero_telemetry_.wagner_z1[state_idx] = wagner_z1;
+      aero_telemetry_.wagner_z2[state_idx] = wagner_z2;
+      aero_telemetry_.wagner_output[state_idx] = wagner_output;
       aero_telemetry_.X_eq[state_idx] = X_eq;
       aero_telemetry_.X[state_idx] = X;
       aero_telemetry_.X_target[state_idx] = X_target;
@@ -738,6 +795,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       aero_telemetry_.stall_active[state_idx] = dynamic_stall.active[UPPER_SURFACE] || dynamic_stall.active[LOWER_SURFACE] ? 1.0 : 0.0;
       aero_telemetry_.lut_force[state_idx] = bF_lut;
       aero_telemetry_.dynamic_force[state_idx] = bF_dynamic;
+      aero_telemetry_.wagner_force[state_idx] = bF_wagner;
       aero_telemetry_.added_bias_force[state_idx] = bF_added;
       aero_telemetry_.lut_moment[state_idx] = bM_lut;
       aero_telemetry_.added_bias_moment[state_idx] = bM_added;

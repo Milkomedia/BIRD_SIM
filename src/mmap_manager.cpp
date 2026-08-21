@@ -54,7 +54,12 @@ constexpr std::uint8_t DTYPE_FLOAT32 = 1;
   X("strip.Cd",                     "1",       "strip",     offsetof(SampleData, strip_Cd),                    NUM_STRIPS, 1) \
   X("strip.Cl_lut",                 "1",       "strip",     offsetof(SampleData, strip_Cl_lut),                NUM_STRIPS, 1) \
   X("strip.Cl_dynamic",             "1",       "strip",     offsetof(SampleData, strip_Cl_dynamic),            NUM_STRIPS, 1) \
+  X("strip.Cl_wagner",              "1",       "strip",     offsetof(SampleData, strip_Cl_wagner),             NUM_STRIPS, 1) \
   X("strip.Cm",                     "1",       "strip",     offsetof(SampleData, strip_Cm),                    NUM_STRIPS, 1) \
+  X("strip.wagner_input",           "m/s",     "strip",     offsetof(SampleData, strip_wagner_input),          NUM_STRIPS, 1) \
+  X("strip.wagner_z1",              "m/s",     "strip",     offsetof(SampleData, strip_wagner_z1),             NUM_STRIPS, 1) \
+  X("strip.wagner_z2",              "m/s",     "strip",     offsetof(SampleData, strip_wagner_z2),             NUM_STRIPS, 1) \
+  X("strip.wagner_output",          "m/s",     "strip",     offsetof(SampleData, strip_wagner_output),         NUM_STRIPS, 1) \
   X("strip.X_eq",                   "1",       "strip",     offsetof(SampleData, strip_X_eq),                  NUM_STRIPS, 1) \
   X("strip.X",                      "1",       "strip",     offsetof(SampleData, strip_X),                     NUM_STRIPS, 1) \
   X("strip.X_target",               "1",       "strip",     offsetof(SampleData, strip_X_target),              NUM_STRIPS, 1) \
@@ -63,6 +68,7 @@ constexpr std::uint8_t DTYPE_FLOAT32 = 1;
   X("strip.stall_active",           "bool",    "strip",     offsetof(SampleData, strip_stall_active),          NUM_STRIPS, 1) \
   X("strip.lut_force",              "N",       "body FRD",  offsetof(SampleData, strip_lut_force),             NUM_STRIPS, 3) \
   X("strip.dynamic_force",          "N",       "body FRD",  offsetof(SampleData, strip_dynamic_force),         NUM_STRIPS, 3) \
+  X("strip.wagner_force",           "N",       "body FRD",  offsetof(SampleData, strip_wagner_force),          NUM_STRIPS, 3) \
   X("strip.added_bias_force",       "N",       "body FRD",  offsetof(SampleData, strip_added_bias_force),      NUM_STRIPS, 3) \
   X("strip.added_full_force",       "N",       "body FRD",  offsetof(SampleData, strip_added_full_force),      NUM_STRIPS, 3) \
   X("strip.lut_moment",             "N.m",     "body FRD",  offsetof(SampleData, strip_lut_moment),            NUM_STRIPS, 3) \
@@ -253,7 +259,12 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   copy_scalar(data.strip_Cd, aero.Cd);
   copy_scalar(data.strip_Cl_lut, aero.Cl_lut);
   copy_scalar(data.strip_Cl_dynamic, aero.Cl_dynamic);
+  copy_scalar(data.strip_Cl_wagner, aero.Cl_wagner);
   copy_scalar(data.strip_Cm, aero.Cm);
+  copy_scalar(data.strip_wagner_input, aero.wagner_input);
+  copy_scalar(data.strip_wagner_z1, aero.wagner_z1);
+  copy_scalar(data.strip_wagner_z2, aero.wagner_z2);
+  copy_scalar(data.strip_wagner_output, aero.wagner_output);
   copy_scalar(data.strip_X_eq, aero.X_eq);
   copy_scalar(data.strip_X, aero.X);
   copy_scalar(data.strip_X_target, aero.X_target);
@@ -262,6 +273,7 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   copy_scalar(data.strip_stall_active, aero.stall_active);
   copy_vector(data.strip_lut_force, aero.lut_force);
   copy_vector(data.strip_dynamic_force, aero.dynamic_force);
+  copy_vector(data.strip_wagner_force, aero.wagner_force);
   copy_vector(data.strip_added_bias_force, aero.added_bias_force);
   copy_vector(data.strip_added_full_force, aero.added_full_force);
   copy_vector(data.strip_lut_moment, aero.lut_moment);

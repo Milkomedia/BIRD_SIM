@@ -565,7 +565,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.curves["flow.X_target"] = plot.plot(pen=pg.mkPen((145, 205, 170), width=1.5), name=paper_text("<i>X</i><sub>t</sub>", 10))
         self.curves["flow.stall_active"] = plot.plot(pen=pg.mkPen((*purple, 70), width=1), fillLevel=0.0, brush=pg.mkBrush(*purple, 35), name=paper_text("stall", 10))
       elif name == "coeff":
-        for curve_name, label, color in (("Cd", "<i>C</i><sub>D</sub>", blue), ("Cl_lut", "<i>C</i><sub>L,LUT</sub>", (135, 205, 165)), ("Cl_dynamic", "<i>C</i><sub>L</sub>", green), ("Cm", "<i>C</i><sub>M</sub>", purple)):
+        for curve_name, label, color in (("Cd", "<i>C</i><sub>D</sub>", blue), ("Cl_lut", "<i>C</i><sub>L,LUT</sub>", (135, 205, 165)), ("Cl_dynamic", "<i>C</i><sub>L,DS</sub>", green), ("Cl_wagner", "&Delta;<i>C</i><sub>L,WJ</sub>", (220, 120, 30)), ("Cl_total", "<i>C</i><sub>L</sub>", (0, 0, 0)), ("Cm", "<i>C</i><sub>M</sub>", purple)):
           self.curves[f"flow.{curve_name}"] = plot.plot(pen=pg.mkPen(color, width=2), name=paper_text(label, 10))
       else:
         self.curves[f"flow.{name}"] = plot.plot(pen=pg.mkPen(blue, width=2), name=paper_text(title, 10))
@@ -580,6 +580,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
     pens = {
       "lut": pg.mkPen((30, 90, 210), width=2),
       "dynamic": pg.mkPen((220, 50, 50), width=2),
+      "wagner": pg.mkPen((150, 80, 190), width=2),
       "added_bias": pg.mkPen((230, 140, 20), width=2),
       "added_full": pg.mkPen((20, 150, 90), width=2, style=QtCore.Qt.DashLine)
     }
@@ -588,7 +589,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         symbol = "F" if kind == "force" else "M"
         plot = self._plot(graphics, row, axis, f"<i>{symbol}</i><sub>{axis_name}</sub><sup>B</sup>", "N" if kind == "force" else "N m", True, row == 1)
         self.load_plots[(kind, axis)] = plot
-        labels = {"lut": "LUT", "dynamic": "DS", "added_bias": "AM<sub>bias</sub>", "added_full": "AM<sub>full</sub>"}
+        labels = {"lut": "LUT", "dynamic": "DS", "wagner": "WJ", "added_bias": "AM<sub>bias</sub>", "added_full": "AM<sub>full</sub>"}
         for contribution, pen in pens.items(): self.curves[f"load.{kind}.{axis}.{contribution}"] = plot.plot(pen=pen, name=paper_text(labels[contribution], 10))
         self.curves[f"load.{kind}.{axis}.total"] = plot.plot(pen=pg.mkPen((0, 0, 0), width=3), name=paper_text("&Sigma;", 10))
 
@@ -720,7 +721,10 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"joint.{joint}.torque", time, channels["servo.torque"][:, joint])
 
   def _update_strip_flow(self) -> None:
-    names = tuple(f"strip.{name}" for name in ("alpha", "alpha_dot", "speed", "Re", "X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"))
+    flow_names = ["alpha", "alpha_dot", "speed", "Re", "X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"]
+    has_wagner = "strip.Cl_wagner" in self.channel_names
+    if has_wagner: flow_names.append("Cl_wagner")
+    names = tuple(f"strip.{name}" for name in flow_names)
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
     if time.size == 0: return
@@ -731,11 +735,16 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self._set_curve("flow.Re", time, channels["strip.Re"][:, index]*1.0e-5)
     for name in ("X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"):
       self._set_curve(f"flow.{name}", time, channels[f"strip.{name}"][:, index])
+    wagner_cl = channels["strip.Cl_wagner"][:, index] if has_wagner else np.zeros(time.shape, dtype=np.float32)
+    self._set_curve("flow.Cl_wagner", time, wagner_cl)
+    self._set_curve("flow.Cl_total", time, channels["strip.Cl_dynamic"][:, index]+wagner_cl)
 
   def _update_strip_loads(self) -> None:
-    force_contributions = ("lut", "dynamic", "added_bias", "added_full")
+    force_contributions = ("lut", "dynamic", "wagner", "added_bias", "added_full")
     moment_contributions = ("lut", "added_bias", "added_full")
-    names = tuple([f"strip.{name}_force" for name in force_contributions] + [f"strip.{name}_moment" for name in moment_contributions])
+    has_wagner = "strip.wagner_force" in self.channel_names
+    recorded_forces = tuple(name for name in force_contributions if name != "wagner" or has_wagner)
+    names = tuple([f"strip.{name}_force" for name in recorded_forces] + [f"strip.{name}_moment" for name in moment_contributions])
 
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
@@ -750,7 +759,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         total = np.zeros(time.shape, dtype=np.float32)
 
         for contribution in force_contributions:
-          if kind == "moment" and contribution == "dynamic": values = np.zeros(time.shape, dtype=np.float32)
+          if (kind == "moment" and contribution in ("dynamic", "wagner")) or (contribution == "wagner" and not has_wagner): values = np.zeros(time.shape, dtype=np.float32)
           else: values = channels[f"strip.{contribution}_{kind}"][:, index, axis]
           self._set_curve(f"load.{kind}.{axis}.{contribution}", time, values)
           axis_series.append(values)

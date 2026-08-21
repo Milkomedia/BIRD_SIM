@@ -84,7 +84,12 @@ public:
     std::array<double, NUM_STRIPS> Cd{};
     std::array<double, NUM_STRIPS> Cl_lut{};
     std::array<double, NUM_STRIPS> Cl_dynamic{};
+    std::array<double, NUM_STRIPS> Cl_wagner{};
     std::array<double, NUM_STRIPS> Cm{};
+    std::array<double, NUM_STRIPS> wagner_input{};
+    std::array<double, NUM_STRIPS> wagner_z1{};
+    std::array<double, NUM_STRIPS> wagner_z2{};
+    std::array<double, NUM_STRIPS> wagner_output{};
     std::array<double, NUM_STRIPS> X_eq{};
     std::array<double, NUM_STRIPS> X{};
     std::array<double, NUM_STRIPS> X_target{};
@@ -93,6 +98,7 @@ public:
     std::array<double, NUM_STRIPS> stall_active{};
     std::array<Eigen::Vector3d, NUM_STRIPS> lut_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> dynamic_force{};
+    std::array<Eigen::Vector3d, NUM_STRIPS> wagner_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> added_bias_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> added_full_force{};
     std::array<Eigen::Vector3d, NUM_STRIPS> lut_moment{};
@@ -102,10 +108,11 @@ public:
     void reset() {
       const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
       alpha.fill(0.0); alpha_dot.fill(0.0); speed.fill(0.0); Re.fill(0.0);
-      Cd.fill(0.0); Cl_lut.fill(0.0); Cl_dynamic.fill(0.0); Cm.fill(0.0);
+      Cd.fill(0.0); Cl_lut.fill(0.0); Cl_dynamic.fill(0.0); Cl_wagner.fill(0.0); Cm.fill(0.0);
+      wagner_input.fill(0.0); wagner_z1.fill(0.0); wagner_z2.fill(0.0); wagner_output.fill(0.0);
       X_eq.fill(1.0); X.fill(1.0); X_target.fill(1.0);
       tau1.fill(0.0); tau2.fill(0.0); stall_active.fill(0.0);
-      lut_force.fill(zero); dynamic_force.fill(zero);
+      lut_force.fill(zero); dynamic_force.fill(zero); wagner_force.fill(zero);
       added_bias_force.fill(zero); added_full_force.fill(zero);
       lut_moment.fill(zero);
       added_bias_moment.fill(zero); added_full_moment.fill(zero);
@@ -141,6 +148,7 @@ private:
   StripState strip_state_{};
   AeroTelemetry aero_telemetry_{};
   std::array<DynamicStallState, 2*(param::NH+param::NR+param::NM)> dynamic_stall_state_{};
+  std::array<std::array<double, 2>, NUM_STRIPS> wagner_state_{}; // Jones states z1,z2 [m/s]
   // [0:5] wing segments (RH, RR, RM, LH, LR, LM), [6] body ellipsoid
   std::array<Eigen::Vector3d, 7> aero_pos_{};    // [m], body FRD
   std::array<Eigen::Vector3d, 7> aero_force_{};  // [N], body FRD

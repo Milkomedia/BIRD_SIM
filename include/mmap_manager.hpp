@@ -66,7 +66,12 @@ struct SampleData {
   float strip_Cd[NUM_STRIPS]{};
   float strip_Cl_lut[NUM_STRIPS]{};
   float strip_Cl_dynamic[NUM_STRIPS]{};
+  float strip_Cl_wagner[NUM_STRIPS]{};
   float strip_Cm[NUM_STRIPS]{};
+  float strip_wagner_input[NUM_STRIPS]{};
+  float strip_wagner_z1[NUM_STRIPS]{};
+  float strip_wagner_z2[NUM_STRIPS]{};
+  float strip_wagner_output[NUM_STRIPS]{};
   float strip_X_eq[NUM_STRIPS]{};
   float strip_X[NUM_STRIPS]{};
   float strip_X_target[NUM_STRIPS]{};
@@ -76,6 +81,7 @@ struct SampleData {
 
   float strip_lut_force[NUM_STRIPS][3]{};
   float strip_dynamic_force[NUM_STRIPS][3]{};
+  float strip_wagner_force[NUM_STRIPS][3]{};
   float strip_added_bias_force[NUM_STRIPS][3]{};
   float strip_added_full_force[NUM_STRIPS][3]{};
   float strip_lut_moment[NUM_STRIPS][3]{};
