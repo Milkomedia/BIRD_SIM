@@ -14,8 +14,8 @@ class MST;
 
 namespace bird_mmap {
 
-inline constexpr std::uint32_t LOG_HZ = 5000;
-inline constexpr std::uint32_t LOG_SECONDS = 1;
+inline constexpr std::uint32_t LOG_HZ = 250;
+inline constexpr std::uint32_t LOG_SECONDS = 3;
 inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
 inline constexpr std::size_t NUM_JOINTS = 12;
 inline constexpr std::size_t NUM_SEGMENTS = 6;
@@ -50,6 +50,8 @@ struct SampleData {
   float joint_theta_ddot[NUM_JOINTS]{};
   float joint_theta_cmd[NUM_JOINTS]{};
   float servo_torque[NUM_JOINTS]{};
+  float damping_torque[NUM_JOINTS]{};
+  float total_torque[NUM_JOINTS]{};
 
   float segment_pos[NUM_SEGMENTS][3]{};
   float segment_force[NUM_SEGMENTS][3]{};
@@ -149,7 +151,7 @@ public:
 
   void open();
   void close();
-  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque);
+  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
 
 private:
   std::string path_;

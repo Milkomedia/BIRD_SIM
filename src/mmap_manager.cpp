@@ -40,6 +40,8 @@ constexpr std::uint8_t DTYPE_FLOAT32 = 1;
   X("joint.theta_ddot",             "rad/s2",  "joint",     offsetof(SampleData, joint_theta_ddot),           NUM_JOINTS, 1) \
   X("joint.theta_cmd",              "rad",     "joint",     offsetof(SampleData, joint_theta_cmd),            NUM_JOINTS, 1) \
   X("servo.torque",                 "N.m",     "joint",     offsetof(SampleData, servo_torque),               NUM_JOINTS, 1) \
+  X("joint.damping_torque",         "N.m",     "joint",     offsetof(SampleData, damping_torque),             NUM_JOINTS, 1) \
+  X("joint.total_torque",           "N.m",     "joint",     offsetof(SampleData, total_torque),               NUM_JOINTS, 1) \
   X("segment.pos",                  "m",       "body FRD",  offsetof(SampleData, segment_pos),                NUM_SEGMENTS, 3) \
   X("segment.force",                "N",       "body FRD",  offsetof(SampleData, segment_force),              NUM_SEGMENTS, 3) \
   X("segment.torque",               "N.m",     "body FRD",  offsetof(SampleData, segment_torque),             NUM_SEGMENTS, 3) \
@@ -205,7 +207,7 @@ void MMapLogger::close() {
   map_size_ = 0;
 }
 
-void MMapLogger::push(const double time, const std::uint64_t step, const std::uint64_t reset_epoch, const double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque) {
+void MMapLogger::push(const double time, const std::uint64_t step, const std::uint64_t reset_epoch, const double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
   if (!base_) {open();}
 
   const std::uint64_t write_count = atomic_load(&header_->write_count);
@@ -239,6 +241,8 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
     data.joint_theta_ddot[i] = static_cast<float>(s.theta_ddot[i]);
     data.joint_theta_cmd[i] = static_cast<float>(cmd.theta[i]);
     data.servo_torque[i] = static_cast<float>(servo_torque[i]);
+    data.damping_torque[i] = static_cast<float>(damping_torque[i]);
+    data.total_torque[i] = static_cast<float>(servo_torque[i] + damping_torque[i]);
   }
 
   const std::array<Eigen::Vector3d, 7>& aero_pos = mst.positions();

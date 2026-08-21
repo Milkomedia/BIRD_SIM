@@ -3,6 +3,12 @@
 
   <default>
     <geom contype="0" conaffinity="0"/>
+    <default class="damper_J1"><joint damping="0.001"/></default>
+    <default class="damper_J2"><joint damping="0.001"/></default>
+    <default class="damper_J3"><joint damping="0.001"/></default>
+    <default class="damper_J4"><joint damping="0.001"/></default>
+    <default class="damper_J5"><joint damping="0.100"/></default>
+    <default class="damper_J6"><joint damping="0.001"/></default>
   </default>
 
   <asset>
@@ -34,32 +40,32 @@
 
       <body name="RWing1" pos="-0.054 -0.066 0.012">
         <inertial pos="0.0140954 0 0" mass="0.0142420" diaginertia="2.09460e-06 2.09460e-06 2.09460e-06"/>
-        <joint name="J1" pos="0 0 0" axis="1 0 0"/>
+        <joint name="J1" class="damper_J1" pos="0 0 0" axis="1 0 0"/>
         <geom pos="0.054 0.066 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing1"/>
         
         <body name="RWing2" pos="0.022 -0.006 0">
           <inertial pos="0.01 -0.006 0" mass="0.0236670" diaginertia="4.88338e-06 4.88338e-06 4.88338e-06"/>
-          <joint name="J2" pos="0 0 0" axis="0 -1 0"/>
+          <joint name="J2" class="damper_J2" pos="0 0 0" axis="0 -1 0"/>
           <geom pos="0.032 0.072 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing2"/>
           
           <body name="RWing3" pos="0.02 -0.006 -0.006">
             <inertial pos="-0.00832606 -0.0495296 0.000252962" quat="0.352206 0.184514 -0.613148 0.682609" mass="0.0236670" diaginertia="4.28992e-04 4.02883e-04 2.61125e-05"/>
-            <joint name="J3" pos="0 0 0" axis="0 0 1"/>
+            <joint name="J3" class="damper_J3" pos="0 0 0" axis="0 0 1"/>
             <geom pos="0.012 0.078 -0.006" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing3"/>
             
             <body name="RWing4" pos="-0.017385 -0.112374 0.010924">
               <inertial pos="0.0159714 -0.0443005 -0.00446237" quat="0.680193 0.680193 0.193229 0.193229" mass="0.0355005" diaginertia="5.93099e-04 5.63362e-04 2.97498e-05"/>
-              <joint name="J4" pos="0 0 0" axis="0.272948 0.181163 0.944817"/>
+              <joint name="J4" class="damper_J4" pos="0 0 0" axis="0.272948 0.181163 0.944817"/>
               <geom pos="0.029385 0.190374 -0.016924" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing4"/>
               
               <body name="RWing5" pos="0.038473 -0.083152 -0.006535">
                 <inertial pos="0.00762387 -0.00474471 0.000283107" mass="0.00591675" diaginertia="4.84493e-07 4.84493e-07 4.84493e-07"/>
-                <joint name="J5" pos="0 0 0" axis="0.46039 -0.885988 -0.055365" damping="0.1"/>
+                <joint name="J5" class="damper_J5" pos="0 0 0" axis="0.46039 -0.885988 -0.055365"/>
                 <geom pos="-0.009088 0.273526 -0.010389" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing5"/>
                 
                 <body name="RWing6" pos="0.00608 -0.012127 0.000242">
                   <inertial pos="0.00535555 -0.0427722 -0.0148432" quat="0.438819 0.554471 -0.554471 0.438819" mass="0.0236670" diaginertia="1.49533e-05 1.42791e-05 2.18166e-06"/>
-                  <joint name="J6" pos="0 0 0" axis="-0.259868 -0.096705 0.96079" damping="0.1"/>
+                  <joint name="J6" class="damper_J6" pos="0 0 0" axis="-0.259868 -0.096705 0.96079"/>
                   <geom pos="-0.015168 0.285653 -0.010631" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="RWing6"/>
                 </body>
               </body>
@@ -70,32 +76,32 @@
 
       <body name="LWing1" pos="-0.054 0.066 0.012">
         <inertial pos="0.0140954 0 0" mass="0.0142420" diaginertia="2.09460e-06 2.09460e-06 2.09460e-06"/>
-        <joint name="J7" pos="0 0 0" axis="-1 0 0"/>
+        <joint name="J7" class="damper_J1" pos="0 0 0" axis="-1 0 0"/>
         <geom pos="0.054 -0.066 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing1"/>
         
         <body name="LWing2" pos="0.022 0.006 0">
           <inertial pos="0.01 0.006 0" mass="0.0236670" diaginertia="4.88338e-06 4.88338e-06 4.88338e-06"/>
-          <joint name="J8" pos="0 0 0" axis="0 -1 0"/>
+          <joint name="J8" class="damper_J2" pos="0 0 0" axis="0 -1 0"/>
           <geom pos="0.032 -0.072 -0.012" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing2"/>
           
           <body name="LWing3" pos="0.02 0.006 -0.006">
             <inertial pos="-0.00832606 0.0495296 0.000252962" quat="0.184514 0.352206 -0.682609 0.613148" mass="0.0236670" diaginertia="4.28992e-04 4.02883e-04 2.61125e-05"/>
-            <joint name="J9" pos="0 0 0" axis="0 0 -1"/>
+            <joint name="J9" class="damper_J3" pos="0 0 0" axis="0 0 -1"/>
             <geom pos="0.012 -0.078 -0.006" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing3"/>
             
             <body name="LWing4" pos="-0.017385 0.112374 0.010924">
               <inertial pos="0.0159714 0.0443005 -0.00446237" quat="0.680193 0.680193 -0.193229 -0.193229" mass="0.0355005" diaginertia="5.93099e-04 5.63362e-04 2.97498e-05"/>
-              <joint name="J10" pos="0 0 0" axis="-0.272948 0.181163 -0.944817"/>
+              <joint name="J10" class="damper_J4" pos="0 0 0" axis="-0.272948 0.181163 -0.944817"/>
               <geom pos="0.029385 -0.190374 -0.016924" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing4"/>
               
               <body name="LWing5" pos="0.038473 0.083152 -0.006535">
                 <inertial pos="0.00762387 0.00474471 0.000283107" mass="0.00591675" diaginertia="4.84493e-07 4.84493e-07 4.84493e-07"/>
-                <joint name="J11" pos="0 0 0" axis="-0.46039 -0.885988 0.055365" damping="0.1"/>
+                <joint name="J11" class="damper_J5" pos="0 0 0" axis="-0.46039 -0.885988 0.055365"/>
                 <geom pos="-0.009088 -0.273526 -0.010389" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing5"/>
                 
                 <body name="LWing6" pos="0.00608 0.012127 0.000242">
                   <inertial pos="0.00535555 0.0427722 -0.0148432" quat="0.554471 0.438819 -0.438819 0.554471" mass="0.0236670" diaginertia="1.49533e-05 1.42791e-05 2.18166e-06"/>
-                  <joint name="J12" pos="0 0 0" axis="0.259868 -0.096705 -0.96079" damping="0.1"/>
+                  <joint name="J12" class="damper_J6" pos="0 0 0" axis="0.259868 -0.096705 -0.96079"/>
                   <geom pos="-0.015168 -0.285653 -0.010631" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="LWing6"/>
                 </body>
               </body>

@@ -25,8 +25,8 @@ namespace param {
   inline constexpr double KIN_GAIN = 2.2;
 
   const std::array<double, 12> INITIAL_DES_THETA{
-    0.12, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.12, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903
+    0.12, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.12, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903
   };
 
   inline constexpr std::size_t NH = 7;  // number of humerus strip frame

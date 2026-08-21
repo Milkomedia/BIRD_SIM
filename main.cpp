@@ -78,12 +78,14 @@ int main(int argc, char** argv) {
 
   std::array<int, 12> servo_qpos_address{};
   std::array<int, 12> servo_qvel_address{};
+  std::array<double, 12> joint_passive_damping{};
   for (std::size_t i=0; i<12; ++i) {
     const int actuator_id = mj_utils::g_actuator_ids[i];
     const int joint_id = m->actuator_trnid[2 * actuator_id];
+    const std::size_t motor_idx = i % param::MOTOR_REDUCTION_RATIO.size();
     servo_qpos_address[i] = m->jnt_qposadr[joint_id];
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
-    const std::size_t motor_idx = i % param::MOTOR_REDUCTION_RATIO.size();
+    joint_passive_damping[i] = static_cast<double>(m->dof_damping[servo_qvel_address[i]]);
     const double reduction_ratio = param::MOTOR_REDUCTION_RATIO[motor_idx];
     m->dof_armature[servo_qvel_address[i]] += static_cast<mjtNum>(param::MOTOR_ROTOR_INERTIA[motor_idx] * reduction_ratio * reduction_ratio);
   }
@@ -176,6 +178,7 @@ int main(int argc, char** argv) {
     std::array<Eigen::Vector3d, 7> applied_aero_pos{};
     std::array<Eigen::Vector3d, 7> applied_aero_force{};
     std::array<double, 12> servo_torque{};
+    std::array<double, 12> damping_torque{};
     mjtNum snapshot_time = sim_data->time;
     double full_added_time = -1.0;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
@@ -204,6 +207,7 @@ int main(int argc, char** argv) {
         applied_aero_pos.fill(Eigen::Vector3d::Zero());
         applied_aero_force.fill(Eigen::Vector3d::Zero());
         servo_torque.fill(0.0);
+        damping_torque.fill(0.0);
         full_added_time = -1.0;
         sim_step = 0;
         log_decimation = 0;
@@ -357,8 +361,11 @@ int main(int argc, char** argv) {
 
           ++sim_step;
           if (log_due) {
-            for (std::size_t i=0; i<12; ++i) {servo_torque[i] = servo[i].motor_state.torque;}
-            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, full_added_time, s, cmd, mst, servo_torque);
+            for (std::size_t i=0; i<12; ++i) {
+              servo_torque[i] = servo[i].motor_state.torque;
+              damping_torque[i] = -joint_passive_damping[i] * s.theta_dot[i];
+            }
+            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, full_added_time, s, cmd, mst, servo_torque, damping_torque);
           }
         }
       }

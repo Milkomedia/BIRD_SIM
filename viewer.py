@@ -522,7 +522,9 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.tabs.addTab(joint_tabs, "Joint")
     blue = pg.mkPen((30, 90, 210), width=2)
     red = pg.mkPen((220, 50, 50), width=2, style=QtCore.Qt.DashLine)
-    torque_pen = pg.mkPen((20, 150, 90), width=2)
+    total_torque_pen = pg.mkPen((20, 20, 20), width=2.5)
+    servo_torque_pen = pg.mkPen((20, 150, 90), width=1.5)
+    damping_torque_pen = pg.mkPen((160, 70, 180), width=1.5, style=QtCore.Qt.DashLine)
     for wing in range(2):
       graphics = pg.GraphicsLayoutWidget()
       joint_tabs.addTab(graphics, "Right" if wing == 0 else "Left")
@@ -530,12 +532,14 @@ class MonitorWindow(QtWidgets.QMainWindow):
         joint = 6*wing+local_joint
         show_time_values = local_joint == 5
         angle_plot = self._plot(graphics, local_joint, 0, f"<i>&theta;</i><sub>{joint+1}</sub>", "&deg;", False, show_time_values)
-        torque_plot = self._plot(graphics, local_joint, 1, f"<i>&tau;</i><sub>{joint+1}</sub>", "N m", False, show_time_values)
+        torque_plot = self._plot(graphics, local_joint, 1, f"<i>&tau;</i><sub>{joint+1}</sub>", "N m", local_joint == 0, show_time_values)
         angle_plot.setYRange(INITIAL_JOINT_DEG[joint]-100.0, INITIAL_JOINT_DEG[joint]+100.0, padding=0.0)
-        torque_plot.setYRange(-20.0, 20.0, padding=0.0)
+        torque_plot.setYRange(-12.0, 12.0, padding=0.0)
         self.curves[f"joint.{joint}.state"] = angle_plot.plot(pen=blue, name="state")
         self.curves[f"joint.{joint}.cmd"] = angle_plot.plot(pen=red, name="cmd")
-        self.curves[f"joint.{joint}.torque"] = torque_plot.plot(pen=torque_pen)
+        self.curves[f"joint.{joint}.torque.total"] = torque_plot.plot(pen=total_torque_pen, name="total")
+        self.curves[f"joint.{joint}.torque.servo"] = torque_plot.plot(pen=servo_torque_pen, name="servo")
+        self.curves[f"joint.{joint}.torque.damping"] = torque_plot.plot(pen=damping_torque_pen, name="damping")
 
   def _build_strip_flow_tab(self) -> None:
     widget = QtWidgets.QWidget()
@@ -711,14 +715,23 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"flight.aero_force.{axis}", time, world_aero_force[:, axis])
 
   def _update_joints(self) -> None:
-    names = ("joint.theta", "joint.theta_cmd", "servo.torque")
+    has_damping_torque = "joint.damping_torque" in self.channel_names
+    has_total_torque = "joint.total_torque" in self.channel_names
+    names = ["joint.theta", "joint.theta_cmd", "servo.torque"]
+    if has_damping_torque: names.append("joint.damping_torque")
+    if has_total_torque: names.append("joint.total_torque")
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
     if time.size == 0: return
+    servo_torque = channels["servo.torque"]
+    damping_torque = channels["joint.damping_torque"] if has_damping_torque else np.zeros_like(servo_torque)
+    total_torque = channels["joint.total_torque"] if has_total_torque else servo_torque+damping_torque
     for joint in range(12):
       self._set_curve(f"joint.{joint}.state", time, channels["joint.theta"][:, joint]*RAD2DEG)
       self._set_curve(f"joint.{joint}.cmd", time, channels["joint.theta_cmd"][:, joint]*RAD2DEG)
-      self._set_curve(f"joint.{joint}.torque", time, channels["servo.torque"][:, joint])
+      self._set_curve(f"joint.{joint}.torque.total", time, total_torque[:, joint])
+      self._set_curve(f"joint.{joint}.torque.servo", time, servo_torque[:, joint])
+      self._set_curve(f"joint.{joint}.torque.damping", time, damping_torque[:, joint])
 
   def _update_strip_flow(self) -> None:
     flow_names = ["alpha", "alpha_dot", "speed", "Re", "X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"]
