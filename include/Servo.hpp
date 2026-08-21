@@ -12,11 +12,11 @@ struct MotorParameters {
   double reduction_ratio = 20.0;
   double efficiency = 0.85;
 
-  double max_voltage = 24.0; // [V]
-  double max_current = 20.0; // [A]
   double max_torque = 10.0; // [Nm]
 
   double viscous_friction = 0.002; // [Nm/(rad/s)]
+
+  double esc_time_constant = 0.0; // current-command time constant [sec]
 
   double kP = 0.0;   // [Nm/rad]
   double kD = 0.0;   // [Nm/(rad/s)]
@@ -34,7 +34,7 @@ class Servo {
   double desired_rad = 0.0;
   MotorState motor_state;
 
-  Servo(MotorParameters motor_parameters, double control_min_torque, double control_max_torque);
+  explicit Servo(MotorParameters motor_parameters);
 
   void reset();
   void step(double theta, double theta_dot);
@@ -43,13 +43,13 @@ class Servo {
   MotorParameters motor_;
 
   double current_ = 0.0;
+  double current_command_ = 0.0;
   double current_decay_ = 0.6;
+  double esc_command_decay_ = 0.0;
   double torque_per_amp_ = 0.0;
   double inv_torque_per_amp_ = 0.0;
   double back_emf_per_joint_rad_s_ = 0.0;
   double inv_ohm_ = 0.0;
-  double minimum_torque_ = 0.0;
-  double maximum_torque_ = 0.0;
 };
 
 } // namespace Actuator

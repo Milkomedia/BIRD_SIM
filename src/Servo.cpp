@@ -5,15 +5,14 @@
 
 namespace Actuator {
 
-Servo::Servo(const MotorParameters motor_parameters, const double control_min_torque, const double control_max_torque)
+Servo::Servo(const MotorParameters motor_parameters)
   : motor_(motor_parameters),
     current_decay_(std::exp(-motor_.ohm * motor_.dt / motor_.h)),
+    esc_command_decay_(motor_.esc_time_constant > 0.0 ? std::exp(-motor_.dt / motor_.esc_time_constant) : 0.0),
     torque_per_amp_(motor_.Kt * motor_.reduction_ratio * motor_.efficiency),
     inv_torque_per_amp_(1.0 / torque_per_amp_),
     back_emf_per_joint_rad_s_(motor_.Ke * motor_.reduction_ratio),
-    inv_ohm_(1.0 / motor_.ohm),
-    minimum_torque_(std::max(control_min_torque, -motor_.max_torque)),
-    maximum_torque_(std::min(control_max_torque, motor_.max_torque)) {}
+    inv_ohm_(1.0 / motor_.ohm) {}
 
 void Servo::step(const double theta, const double theta_dot) {
   motor_state.rad = theta;
@@ -25,17 +24,20 @@ void Servo::step(const double theta, const double theta_dot) {
     -motor_.max_torque, motor_.max_torque
   );
 
-  const double desired_current = std::clamp(desired_torque * inv_torque_per_amp_, -motor_.max_current, motor_.max_current);
+  const double desired_current = desired_torque * inv_torque_per_amp_;
+  // Exact update of tau_esc * i_cmd_dot + i_cmd = i_desired.
+  current_command_ = desired_current + (current_command_ - desired_current) * esc_command_decay_;
+
   const double back_emf = back_emf_per_joint_rad_s_ * motor_state.rad_s;
-  const double voltage = std::clamp(motor_.ohm * desired_current + back_emf, -motor_.max_voltage, motor_.max_voltage);
+  const double voltage = motor_.ohm * current_command_ + back_emf;
   const double steady_state_current = (voltage - back_emf) * inv_ohm_;
 
+  // Exact zero-order-hold update of L * i_dot = V - R*i - Ke*omega_m.
   current_ = steady_state_current + (current_ - steady_state_current) * current_decay_;
-  current_ = std::clamp(current_, -motor_.max_current, motor_.max_current);
 
   const double electromagnetic_torque = torque_per_amp_ * current_;
   const double friction_torque = motor_.viscous_friction * motor_state.rad_s;
-  motor_state.torque = std::clamp(electromagnetic_torque - friction_torque, minimum_torque_, maximum_torque_);
+  motor_state.torque = std::clamp(electromagnetic_torque - friction_torque, -motor_.max_torque, motor_.max_torque);
 }
 
 void Servo::reset() {
@@ -43,6 +45,7 @@ void Servo::reset() {
   motor_state.rad_s = 0.0;
   motor_state.torque = 0.0;
   current_ = 0.0;
+  current_command_ = 0.0;
 }
 
 } // namespace Actuator

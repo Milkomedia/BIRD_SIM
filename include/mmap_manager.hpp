@@ -14,8 +14,8 @@ class MST;
 
 namespace bird_mmap {
 
-inline constexpr std::uint32_t LOG_HZ = 250;
-inline constexpr std::uint32_t LOG_SECONDS = 5;
+inline constexpr std::uint32_t LOG_HZ = 5000;
+inline constexpr std::uint32_t LOG_SECONDS = 1;
 inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
 inline constexpr std::size_t NUM_JOINTS = 12;
 inline constexpr std::size_t NUM_SEGMENTS = 6;

@@ -67,7 +67,6 @@ int main(int argc, char** argv) {
 
   mjData* sim_data = mj_makeData(m);
   mj_copyData(sim_data, m, render_data);
-  mj_forward(m, sim_data);
 
   // ---------------- [ Sensor and actuator address ] ----------------
   const int imu_pos_sensor_adr  = m->sensor_adr[mj_name2id(m, mjOBJ_SENSOR, "imu_pos")];
@@ -79,23 +78,18 @@ int main(int argc, char** argv) {
 
   std::array<int, 12> servo_qpos_address{};
   std::array<int, 12> servo_qvel_address{};
-  std::array<double, 12> servo_ctrl_min{};
-  std::array<double, 12> servo_ctrl_max{};
   for (std::size_t i=0; i<12; ++i) {
     const int actuator_id = mj_utils::g_actuator_ids[i];
     const int joint_id = m->actuator_trnid[2 * actuator_id];
     servo_qpos_address[i] = m->jnt_qposadr[joint_id];
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
-    if (m->actuator_ctrllimited[actuator_id]) {
-      servo_ctrl_min[i] = static_cast<double>(m->actuator_ctrlrange[2 * actuator_id]);
-      servo_ctrl_max[i] = static_cast<double>(m->actuator_ctrlrange[2 * actuator_id + 1]);
-    }
-    else {
-      const std::size_t motor_idx = i % param::MOTOR_MAX_TORQUE.size();
-      servo_ctrl_min[i] = -param::MOTOR_MAX_TORQUE[motor_idx];
-      servo_ctrl_max[i] =  param::MOTOR_MAX_TORQUE[motor_idx];
-    }
+    const std::size_t motor_idx = i % param::MOTOR_REDUCTION_RATIO.size();
+    const double reduction_ratio = param::MOTOR_REDUCTION_RATIO[motor_idx];
+    m->dof_armature[servo_qvel_address[i]] += static_cast<mjtNum>(param::MOTOR_ROTOR_INERTIA[motor_idx] * reduction_ratio * reduction_ratio);
   }
+  // Propagate model-side armature changes, then recompute the initial dynamics.
+  mj_setConst(m, sim_data);
+  mj_forward(m, sim_data);
 
   constexpr std::array<const char*, 6> wing_plate_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
   std::array<int, 6> wing_plate_ids{};
@@ -160,15 +154,14 @@ int main(int argc, char** argv) {
       motor_parameters[i].Ke = param::MOTOR_KE[i];
       motor_parameters[i].reduction_ratio = param::MOTOR_REDUCTION_RATIO[i];
       motor_parameters[i].efficiency = param::MOTOR_EFFICIENCY[i];
-      motor_parameters[i].max_voltage = param::MOTOR_MAX_VOLTAGE[i];
-      motor_parameters[i].max_current = param::MOTOR_MAX_CURRENT[i];
       motor_parameters[i].max_torque = param::MOTOR_MAX_TORQUE[i];
       motor_parameters[i].viscous_friction = param::MOTOR_VISCOUS_FRICTION[i];
+      motor_parameters[i].esc_time_constant = param::MOTOR_ESC_TIME_CONSTANT[i];
       motor_parameters[i].kP = param::MOTOR_KP[i];
       motor_parameters[i].kD = param::MOTOR_KD[i];
       motor_parameters[i].dt = param::MOTOR_DT[i];
     }
-    for (std::size_t i=0; i<12; ++i) {servo.emplace_back(motor_parameters[i % motor_parameters.size()], servo_ctrl_min[i], servo_ctrl_max[i]);}
+    for (std::size_t i=0; i<12; ++i) {servo.emplace_back(motor_parameters[i % motor_parameters.size()]);}
 
     MST mst{};
     bird_mmap::MMapLogger mmap_logger{};

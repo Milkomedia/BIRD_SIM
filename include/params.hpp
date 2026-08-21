@@ -179,14 +179,16 @@ namespace param {
   inline constexpr std::array<double, 6> MOTOR_H =                {0.001, 0.001, 0.001, 0.001, 0.001, 0.001};  // [H]
   inline constexpr std::array<double, 6> MOTOR_KT =               {0.050, 0.050, 0.050, 0.050, 0.050, 0.050};  // [Nm/A]
   inline constexpr std::array<double, 6> MOTOR_KE =               {0.050, 0.050, 0.050, 0.050, 0.050, 0.050};  // [V/(rad/s)]
-  inline constexpr std::array<double, 6> MOTOR_REDUCTION_RATIO =  {9.000, 5.000, 5.000, 5.000, 5.000, 5.000};
+  inline constexpr std::array<double, 6> MOTOR_REDUCTION_RATIO =  {10.00, 5.000, 5.000, 5.000, 5.000, 5.000};
   inline constexpr std::array<double, 6> MOTOR_EFFICIENCY =       {0.950, 0.950, 0.950, 0.950, 0.950, 0.950};
   inline constexpr std::array<double, 6> MOTOR_MAX_VOLTAGE =      {24.00, 24.00, 24.00, 24.00, 24.00, 24.00};  // [V]
-  inline constexpr std::array<double, 6> MOTOR_MAX_CURRENT =      {100.0, 100.0, 100.0, 100.0, 100.0, 100.0};  // [A]
-  inline constexpr std::array<double, 6> MOTOR_MAX_TORQUE =       {50.00, 50.00, 50.00, 50.00, 50.00, 100.00};  // [Nm]
+  inline constexpr std::array<double, 6> MOTOR_MAX_CURRENT =      {100.0, 50.00, 50.00, 50.00, 50.00, 50.00};  // [A]
+  inline constexpr std::array<double, 6> MOTOR_MAX_TORQUE =       {20.00, 15.00, 15.00, 15.00, 15.00, 15.00};  // [Nm]
   inline constexpr std::array<double, 6> MOTOR_VISCOUS_FRICTION = {0.002, 0.002, 0.002, 0.002, 0.002, 0.002};  // [Nm/(rad/s)]
-  inline constexpr std::array<double, 6> MOTOR_KP =               {500.0, 100.0, 100.0, 100.0, 100.0, 50.00};  // [Nm/rad]
-  inline constexpr std::array<double, 6> MOTOR_KD =               {10.00, 0.500, 0.500, 0.500, 0.500, 0.300};  // [Nm/(rad/s)]
+  inline constexpr std::array<double, 6> MOTOR_ROTOR_INERTIA =    {1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6};  // [kg m^2], motor side
+  inline constexpr std::array<double, 6> MOTOR_ESC_TIME_CONSTANT ={0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003};  // [sec]
+  inline constexpr std::array<double, 6> MOTOR_KP =               {50.00, 30.00, 30.00, 30.00, 30.00, 30.00};  // [Nm/rad]
+  inline constexpr std::array<double, 6> MOTOR_KD =               {1.000, 0.500, 0.500, 0.500, 0.500, 0.500};  // [Nm/(rad/s)]
   inline constexpr std::array<double, 6> MOTOR_DT = {SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC, SIM_DT_SEC}; // [sec]
 
   // world NED -> MuJoCo world FLU
