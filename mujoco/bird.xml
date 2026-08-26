@@ -1,14 +1,16 @@
-<mujoco model="xml">
+<mujoco model="bird">
   <compiler angle="radian" meshdir="meshes/" boundmass="1e-06" boundinertia="1e-14"/>
 
   <default>
     <geom contype="0" conaffinity="0"/>
-    <default class="damper_J1"><joint damping="0.001"/></default>
-    <default class="damper_J2"><joint damping="0.001"/></default>
-    <default class="damper_J3"><joint damping="0.001"/></default>
-    <default class="damper_J4"><joint damping="0.001"/></default>
-    <default class="damper_J5"><joint damping="0.100"/></default>
-    <default class="damper_J6"><joint damping="0.001"/></default>
+    <default class="damper_J1"> <joint damping="0.01"/></default>
+    <default class="damper_J2"> <joint damping="0.01"/></default>
+    <default class="damper_J3"> <joint damping="0.01"/></default>
+    <default class="damper_J4"> <joint damping="0.01"/></default>
+    <default class="damper_J5"> <joint damping="0.10"/></default>
+    <default class="damper_J6"> <joint damping="0.05"/></default>
+    <default class="damper_J13"><joint damping="0.01"/></default>
+    <default class="damper_J14"><joint damping="0.01"/></default>
   </default>
 
   <asset>
@@ -25,6 +27,8 @@
     <mesh name="LWing4" content_type="model/stl" file="LWing4.stl" scale="0.001 0.001 0.001"/>
     <mesh name="LWing5" content_type="model/stl" file="LWing5.stl" scale="0.001 0.001 0.001"/>
     <mesh name="LWing6" content_type="model/stl" file="LWing6.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="Tail1" content_type="model/stl" file="Tail1.stl"   scale="0.001 0.001 0.001"/>
+    <mesh name="Tail2" content_type="model/stl" file="Tail2.stl"   scale="0.001 0.001 0.001"/>
   </asset>
   
   <worldbody>
@@ -109,6 +113,18 @@
           </body>
         </body>
       </body>
+
+      <body name="Tail1" pos="-0.24 0 0">
+        <inertial pos="-0.00784114 0 0" mass="0.00202687" diaginertia="4.1532e-8 5.6941e-8 5.9792e-8"/>
+        <joint name="J13" class="damper_J13" pos="0 0 0" axis="-1 0 0"/>
+        <geom pos="0.24 0 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="Tail1"/>
+
+        <body name="Tail2" pos="-0.01 0.006 0">
+          <inertial pos="-0.00682041 -0.006 -0.00703685" mass="0.020" fullinertia="2.16073e-5 9.92721e-7 2.14686e-5 0 -1.72731e-7 0"/>
+          <joint name="J14" class="damper_J14" pos="0 0 0" axis="0 1 0"/>
+          <geom pos="0.25 -0.006 0" type="mesh" rgba="0.7 0.7 0.7 0.2" mesh="Tail2"/>
+        </body>
+      </body>
     </body>
   </worldbody>
 
@@ -125,6 +141,8 @@
     <motor name="motor_J10" joint="J10" gear="1" ctrllimited="false"/>
     <motor name="motor_J11" joint="J11" gear="1" ctrllimited="false"/>
     <motor name="motor_J12" joint="J12" gear="1" ctrllimited="false"/>
+    <motor name="motor_J13" joint="J13" gear="1" ctrllimited="false"/>
+    <motor name="motor_J14" joint="J14" gear="1" ctrllimited="false"/>
   </actuator>
 
   <sensor>

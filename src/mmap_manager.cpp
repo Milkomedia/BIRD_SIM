@@ -22,9 +22,11 @@ namespace bird_mmap {
 namespace {
 
 constexpr char MAGIC[8] = {'B', 'I', 'R', 'D', 'L', 'O', 'G', '1'};
-constexpr std::uint32_t VERSION = 1;
-constexpr std::uint32_t STRIP_ORDER_SEGMENT_WING = 1;
+constexpr std::uint32_t VERSION = 2;
 constexpr std::uint8_t DTYPE_FLOAT32 = 1;
+
+static_assert(NUM_SEGMENTS+1 == MST::NUM_AERO_LOADS, "MST and mmap aerodynamic load counts differ.");
+static_assert(NUM_STRIPS == MST::NUM_STRIPS, "MST and mmap strip counts differ.");
 
 #define BIRD_CHANNELS(X) \
   X("state.pos",                    "m",       "world NED", offsetof(SampleData, state_pos),                  3, 1) \
@@ -35,20 +37,19 @@ constexpr std::uint8_t DTYPE_FLOAT32 = 1;
   X("cmd.vel",                      "m/s",     "world NED", offsetof(SampleData, cmd_vel),                    3, 1) \
   X("cmd.R",                        "1",       "FRD->NED",  offsetof(SampleData, cmd_R),                      3, 3) \
   X("cmd.w",                        "rad/s",   "body FRD",  offsetof(SampleData, cmd_w),                      3, 1) \
+  X("cmd.theta_t",                  "rad",     "tail",      offsetof(SampleData, cmd_theta_t),                1, 1) \
   X("joint.theta",                  "rad",     "joint",     offsetof(SampleData, joint_theta),                NUM_JOINTS, 1) \
   X("joint.theta_dot",              "rad/s",   "joint",     offsetof(SampleData, joint_theta_dot),            NUM_JOINTS, 1) \
   X("joint.theta_ddot",             "rad/s2",  "joint",     offsetof(SampleData, joint_theta_ddot),           NUM_JOINTS, 1) \
   X("joint.theta_cmd",              "rad",     "joint",     offsetof(SampleData, joint_theta_cmd),            NUM_JOINTS, 1) \
   X("servo.torque",                 "N.m",     "joint",     offsetof(SampleData, servo_torque),               NUM_JOINTS, 1) \
   X("joint.damping_torque",         "N.m",     "joint",     offsetof(SampleData, damping_torque),             NUM_JOINTS, 1) \
-  X("joint.total_torque",           "N.m",     "joint",     offsetof(SampleData, total_torque),               NUM_JOINTS, 1) \
   X("segment.pos",                  "m",       "body FRD",  offsetof(SampleData, segment_pos),                NUM_SEGMENTS, 3) \
   X("segment.force",                "N",       "body FRD",  offsetof(SampleData, segment_force),              NUM_SEGMENTS, 3) \
   X("segment.torque",               "N.m",     "body FRD",  offsetof(SampleData, segment_torque),             NUM_SEGMENTS, 3) \
   X("body.ellipsoid_pos",           "m",       "body FRD",  offsetof(SampleData, body_elipsoid_pos),           3, 1) \
   X("body.ellipsoid_force",         "N",       "body FRD",  offsetof(SampleData, body_elipsoid_force),         3, 1) \
   X("body.ellipsoid_torque",        "N.m",     "body FRD",  offsetof(SampleData, body_elipsoid_torque),        3, 1) \
-  X("strip.full_added_time",        "s",       "sim",       offsetof(SampleData, full_added_time),              1, 1) \
   X("strip.alpha",                  "rad",     "strip",     offsetof(SampleData, strip_alpha),                 NUM_STRIPS, 1) \
   X("strip.alpha_dot",              "rad/s",   "strip",     offsetof(SampleData, strip_alpha_dot),             NUM_STRIPS, 1) \
   X("strip.speed",                  "m/s",     "strip",     offsetof(SampleData, strip_speed),                 NUM_STRIPS, 1) \
@@ -184,7 +185,7 @@ void MMapLogger::open() {
   header_->nh = param::NH;
   header_->nr = param::NR;
   header_->nm = param::NM;
-  header_->strip_order = STRIP_ORDER_SEGMENT_WING;
+  header_->nt = param::NT;
   header_->start_time_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
   header_->schema_hash = hash_descriptors(descriptors);
   header_->session_id = header_->start_time_ns;
@@ -207,7 +208,7 @@ void MMapLogger::close() {
   map_size_ = 0;
 }
 
-void MMapLogger::push(const double time, const std::uint64_t step, const std::uint64_t reset_epoch, const double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
+void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
   if (!base_) {open();}
 
   const std::uint64_t write_count = atomic_load(&header_->write_count);
@@ -219,8 +220,6 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   data.time = time;
   data.step = step;
   data.reset_epoch = reset_epoch;
-  data.flags = full_added_time >= 0.0 ? SAMPLE_FULL_ADDED_VALID : 0u;
-  data.full_added_time = static_cast<float>(full_added_time);
 
   copy_vector(data.state_pos, s.pos);
   copy_vector(data.state_vel, s.vel);
@@ -228,6 +227,7 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
   copy_vector(data.cmd_pos, cmd.pos);
   copy_vector(data.cmd_vel, cmd.vel);
   copy_vector(data.cmd_w, cmd.w);
+  data.cmd_theta_t = static_cast<float>(cmd.theta_t);
   for (std::size_t row=0; row<3; ++row) {
     for (std::size_t col=0; col<3; ++col) {
       data.state_R[3*row+col] = static_cast<float>(s.R(row, col));
@@ -242,12 +242,11 @@ void MMapLogger::push(const double time, const std::uint64_t step, const std::ui
     data.joint_theta_cmd[i] = static_cast<float>(cmd.theta[i]);
     data.servo_torque[i] = static_cast<float>(servo_torque[i]);
     data.damping_torque[i] = static_cast<float>(damping_torque[i]);
-    data.total_torque[i] = static_cast<float>(servo_torque[i] + damping_torque[i]);
   }
 
-  const std::array<Eigen::Vector3d, 7>& aero_pos = mst.positions();
-  const std::array<Eigen::Vector3d, 7>& aero_force = mst.forces();
-  const std::array<Eigen::Vector3d, 7>& aero_torque = mst.torques();
+  const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& aero_pos = mst.positions();
+  const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& aero_force = mst.forces();
+  const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& aero_torque = mst.torques();
   copy_vector(data.segment_pos, aero_pos);
   copy_vector(data.segment_force, aero_force);
   copy_vector(data.segment_torque, aero_torque);

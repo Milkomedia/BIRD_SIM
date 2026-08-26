@@ -19,18 +19,29 @@ import pyqtgraph as pg
 
 
 MAGIC = b"BIRDLOG1"
-VERSION = 1
+VERSION = 2
+SUPPORTED_VERSIONS = (1, VERSION)
 HEADER_SIZE = 128
 DESCRIPTOR_SIZE = 96
 DTYPE_FLOAT32 = 1
 RAD2DEG = np.float32(180.0 / np.pi)
 AXES = ("x", "y", "z")
-SEGMENT_NAMES = ("RH", "RR", "RM", "LH", "LR", "LM")
+SEGMENT_NAMES = ("RH", "RR", "RM", "LH", "LR", "LM", "RT", "LT")
 AGGREGATE_NAMES = SEGMENT_NAMES + ("Body",)
 PAPER_FONT = "Times New Roman"
+NUM_WING_JOINTS_PER_WING = 6
+NUM_WING_JOINTS = 2 * NUM_WING_JOINTS_PER_WING
+NUM_TAIL_JOINTS = 2
+NUM_JOINTS = NUM_WING_JOINTS + NUM_TAIL_JOINTS
+WING_NAMES = ("Right", "Left")
+JOINT_GROUPS = tuple(
+  (name, wing*NUM_WING_JOINTS_PER_WING, NUM_WING_JOINTS_PER_WING)
+  for wing, name in enumerate(WING_NAMES)
+) + (("Tail", NUM_WING_JOINTS, NUM_TAIL_JOINTS),)
 INITIAL_JOINT_DEG = (
-  6.87549, -5.72958, 11.25, -40.52, 10.8862, 29.64,
-  6.87549, -5.72958, 11.25, -40.52, 10.8862, 29.64
+  0.0, -10.3132, 11.25, -40.52, 10.8862, 29.64,
+  0.0, -10.3132, 11.25, -40.52, 10.8862, 29.64,
+  0.0, 0.0
 )
 
 
@@ -62,7 +73,7 @@ class Header:
   nh: int
   nr: int
   nm: int
-  strip_order: int
+  nt: int
   start_time_ns: int
   schema_hash: int
   session_id: int
@@ -117,15 +128,15 @@ class MMapReader:
     if self.mm[0:8] != MAGIC: raise RuntimeError(f"bad mmap magic: {self.mm[0:8]!r}")
 
     values = struct.unpack_from("<13I", self.mm, 8)
-    version, header_size, descriptor_size, descriptor_count, sample_size, slot_size, capacity, log_hz, nh, nr, nm, strip_order, _ = values
+    version, header_size, descriptor_size, descriptor_count, sample_size, slot_size, capacity, log_hz, nh, nr, nm, _reserved0, nt = values
     qvalues = struct.unpack_from("<8Q", self.mm, 64)
     _, start_time_ns, schema_hash, session_id, sim_dt_ns, log_dt_ns, data_offset, _ = qvalues
-    if version != VERSION: raise RuntimeError(f"unsupported mmap version: {version}")
+    if version not in SUPPORTED_VERSIONS: raise RuntimeError(f"unsupported mmap version: {version}")
     if header_size != HEADER_SIZE: raise RuntimeError(f"header size mismatch: {header_size}")
     if descriptor_size != DESCRIPTOR_SIZE: raise RuntimeError(f"descriptor size mismatch: {descriptor_size}")
     if data_offset + capacity*slot_size > len(self.mm): raise RuntimeError("mmap file is smaller than its declared layout")
 
-    self.header = Header(version, descriptor_count, sample_size, slot_size, capacity, log_hz, nh, nr, nm, strip_order, start_time_ns, schema_hash, session_id, sim_dt_ns, log_dt_ns, data_offset)
+    self.header = Header(version, descriptor_count, sample_size, slot_size, capacity, log_hz, nh, nr, nm, nt, start_time_ns, schema_hash, session_id, sim_dt_ns, log_dt_ns, data_offset)
     self.descriptors = []
     for i in range(descriptor_count):
       offset = HEADER_SIZE + i*DESCRIPTOR_SIZE
@@ -170,8 +181,7 @@ class MMapReader:
     time = np.full((count,), np.nan, dtype=np.float64)
     channels: Dict[str, np.ndarray] = {
       "__step": np.zeros((count,), dtype=np.uint64),
-      "__reset_epoch": np.zeros((count,), dtype=np.uint64),
-      "__flags": np.zeros((count,), dtype=np.uint32)
+      "__reset_epoch": np.zeros((count,), dtype=np.uint64)
     }
     for descriptor in self.descriptors:
       channels[descriptor.name] = np.full((count,) + descriptor.sample_shape, np.nan, dtype=np.float32)
@@ -183,7 +193,6 @@ class MMapReader:
       time[out_index] = struct.unpack_from("<d", sample, 0)[0]
       channels["__step"][out_index] = struct.unpack_from("<Q", sample, 8)[0]
       channels["__reset_epoch"][out_index] = struct.unpack_from("<Q", sample, 16)[0]
-      channels["__flags"][out_index] = struct.unpack_from("<I", sample, 24)[0]
       for descriptor in self.descriptors:
         values = np.frombuffer(sample, dtype="<f4", count=descriptor.rows*descriptor.cols, offset=descriptor.offset)
         channels[descriptor.name][out_index] = values.reshape(descriptor.sample_shape) if descriptor.sample_shape else values[0]
@@ -281,7 +290,7 @@ def descriptor_metadata(reader: MMapReader) -> Dict:
     "nh": header.nh,
     "nr": header.nr,
     "nm": header.nm,
-    "strip_order": header.strip_order,
+    "nt": header.nt,
     "channels": [descriptor.__dict__ for descriptor in reader.descriptors]
   }
 
@@ -455,9 +464,9 @@ class MonitorWindow(QtWidgets.QMainWindow):
   def _add_strip_controls(self, layout: QtWidgets.QVBoxLayout) -> None:
     controls = QtWidgets.QHBoxLayout()
     wing_combo = QtWidgets.QComboBox()
-    wing_combo.addItems(("Right", "Left"))
+    wing_combo.addItems(WING_NAMES)
     segment_combo = QtWidgets.QComboBox()
-    segment_combo.addItems(("Humerus", "Radius", "Manus"))
+    segment_combo.addItems(("Humerus", "Radius", "Manus", "Tail"))
     strip_spin = QtWidgets.QSpinBox()
     strip_spin.setMinimum(0)
     selector = (wing_combo, segment_combo, strip_spin)
@@ -465,7 +474,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
     wing_combo.currentIndexChanged.connect(lambda value: self._strip_selection_changed(0, value))
     segment_combo.currentIndexChanged.connect(lambda value: self._strip_selection_changed(1, value))
     strip_spin.valueChanged.connect(lambda value: self._strip_selection_changed(2, value))
-    controls.addWidget(QtWidgets.QLabel("Wing:"))
+    controls.addWidget(QtWidgets.QLabel("Side:"))
     controls.addWidget(wing_combo)
     controls.addWidget(QtWidgets.QLabel("Segment:"))
     controls.addWidget(segment_combo)
@@ -485,7 +494,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
   def _sync_strip_controls(self) -> None:
     maximum = 0
     if self.header is not None:
-      maximum = max(0, (self.header.nh, self.header.nr, self.header.nm)[self.strip_segment]-1)
+      maximum = max(0, (self.header.nh, self.header.nr, self.header.nm, self.header.nt)[self.strip_segment]-1)
     self.strip_local = min(self.strip_local, maximum)
     for wing_combo, segment_combo, strip_spin in self.strip_controls:
       blockers = (QtCore.QSignalBlocker(wing_combo), QtCore.QSignalBlocker(segment_combo), QtCore.QSignalBlocker(strip_spin))
@@ -525,14 +534,14 @@ class MonitorWindow(QtWidgets.QMainWindow):
     total_torque_pen = pg.mkPen((20, 20, 20), width=2.5)
     servo_torque_pen = pg.mkPen((20, 150, 90), width=1.5)
     damping_torque_pen = pg.mkPen((160, 70, 180), width=1.5, style=QtCore.Qt.DashLine)
-    for wing in range(2):
+    for group_name, first_joint, joint_count in JOINT_GROUPS:
       graphics = pg.GraphicsLayoutWidget()
-      joint_tabs.addTab(graphics, "Right" if wing == 0 else "Left")
-      for local_joint in range(6):
-        joint = 6*wing+local_joint
-        show_time_values = local_joint == 5
-        angle_plot = self._plot(graphics, local_joint, 0, f"<i>&theta;</i><sub>{joint+1}</sub>", "&deg;", False, show_time_values)
-        torque_plot = self._plot(graphics, local_joint, 1, f"<i>&tau;</i><sub>{joint+1}</sub>", "N m", local_joint == 0, show_time_values)
+      joint_tabs.addTab(graphics, group_name)
+      for row in range(joint_count):
+        joint = first_joint+row
+        show_time_values = row == joint_count-1
+        angle_plot = self._plot(graphics, row, 0, f"<i>&theta;</i><sub>{joint+1}</sub>", "&deg;", False, show_time_values)
+        torque_plot = self._plot(graphics, row, 1, f"<i>&tau;</i><sub>{joint+1}</sub>", "N m", row == 0, show_time_values)
         angle_plot.setYRange(INITIAL_JOINT_DEG[joint]-100.0, INITIAL_JOINT_DEG[joint]+100.0, padding=0.0)
         torque_plot.setYRange(-12.0, 12.0, padding=0.0)
         self.curves[f"joint.{joint}.state"] = angle_plot.plot(pen=blue, name="state")
@@ -652,6 +661,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.browser_combo.clear()
     self.browser_combo.addItems(self.channel_names)
     self.browser_combo.blockSignals(False)
+    tail_enabled = header.nt > 0
+    for _, segment_combo, _ in self.strip_controls:
+      segment_combo.model().item(3).setEnabled(tail_enabled)
+    for index in (6, 7): self.aggregate_combo.model().item(index).setEnabled(tail_enabled)
+    if not tail_enabled and self.strip_segment == 3: self.strip_segment = 0
+    if not tail_enabled and self.aggregate_combo.currentIndex() in (6, 7): self.aggregate_combo.setCurrentIndex(0)
     self._browser_channel_changed()
     self._update_strip_limit()
 
@@ -665,7 +680,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
     segment = self.strip_segment
     if segment == 0: return wing*header.nh+local
     if segment == 1: return 2*header.nh+wing*header.nr+local
-    return 2*(header.nh+header.nr)+wing*header.nm+local
+    if segment == 2: return 2*(header.nh+header.nr)+wing*header.nm+local
+    return 2*(header.nh+header.nr+header.nm)+wing*header.nt+local
 
   def _browser_channel_changed(self) -> None:
     if not self.descriptors or self.browser_combo.currentIndex() < 0: return
@@ -716,17 +732,15 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
   def _update_joints(self) -> None:
     has_damping_torque = "joint.damping_torque" in self.channel_names
-    has_total_torque = "joint.total_torque" in self.channel_names
     names = ["joint.theta", "joint.theta_cmd", "servo.torque"]
     if has_damping_torque: names.append("joint.damping_torque")
-    if has_total_torque: names.append("joint.total_torque")
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
     if time.size == 0: return
     servo_torque = channels["servo.torque"]
     damping_torque = channels["joint.damping_torque"] if has_damping_torque else np.zeros_like(servo_torque)
-    total_torque = channels["joint.total_torque"] if has_total_torque else servo_torque+damping_torque
-    for joint in range(12):
+    total_torque = servo_torque + damping_torque
+    for joint in range(NUM_JOINTS):
       self._set_curve(f"joint.{joint}.state", time, channels["joint.theta"][:, joint]*RAD2DEG)
       self._set_curve(f"joint.{joint}.cmd", time, channels["joint.theta_cmd"][:, joint]*RAD2DEG)
       self._set_curve(f"joint.{joint}.torque.total", time, total_torque[:, joint])
@@ -882,10 +896,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self.dropped_total += dropped
       self._consume(time, channels, dropped)
       self._refresh_active_tab()
-      full_age = ""
-      if time.size and "strip.full_added_time" in channels:
-        full_age = f" | full-added age={max(0.0, float(time[-1]-channels['strip.full_added_time'][-1]))*1000.0:.1f} ms"
-      self.status_label.setText(f"250 Hz | samples={self.history.count} | wc={wc} | dropped={self.dropped_total}{full_age}")
+      self.status_label.setText(f"{self.header.log_hz} Hz | samples={self.history.count} | " f"wc={wc} | dropped={self.dropped_total}")
     except FileNotFoundError:
       self.status_label.setText(f"waiting: {self.mmap_path}")
     except Exception as error:
@@ -899,7 +910,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
           metadata = json.loads(str(loaded["__metadata__"]))
           self.replay_channels = {name: loaded[name].copy() for name in loaded.files if name not in ("time", "__metadata__")}
         descriptors = [ChannelDescriptor(**item) for item in metadata["channels"]]
-        header = Header(metadata.get("version", 1), len(descriptors), 0, 0, max(1, self.replay_time.size), metadata.get("log_hz", 250), metadata["nh"], metadata["nr"], metadata["nm"], metadata.get("strip_order", 1), 0, metadata.get("schema_hash", 0), 0, 0, 0, 0)
+        header = Header(metadata.get("version", 1), len(descriptors), 0, 0, max(1, self.replay_time.size), metadata.get("log_hz", 250), metadata["nh"], metadata["nr"], metadata["nm"], metadata.get("nt", 0), 0, metadata.get("schema_hash", 0), 0, 0, 0, 0)
       else:
         replay_reader = MMapReader(str(path))
         replay_reader.open()

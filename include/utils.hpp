@@ -20,10 +20,10 @@ struct State {
   Eigen::Vector3d w_dot = Eigen::Vector3d::Zero();       // [rad/s^2] body FRD
   Eigen::Matrix3d MoI   = 1.0e-3f * Eigen::Matrix3d::Identity(); // [kg.m^2]
   Eigen::Vector3d vel_f = Eigen::Vector3d::Zero();       // [m/s], world NED
-  std::array<double, 12> theta{};                        // [rad]
-  std::array<double, 12> theta_dot{};                    // [rad/s]
-  std::array<double, 12> theta_ddot{};                   // [rad/s^2]
-  std::array<Eigen::Matrix4d, 12> bTj{};                 // [SE3], wing pose, body FRD
+  std::array<double, param::NUM_JOINTS> theta{};         // [rad], J1-J14
+  std::array<double, param::NUM_JOINTS> theta_dot{};     // [rad/s], J1-J14
+  std::array<double, param::NUM_JOINTS> theta_ddot{};    // [rad/s^2], J1-J14
+  std::array<Eigen::Matrix4d, param::NUM_JOINTS> bTj{};  // [SE3], joint frames, body FRD
 };
 
 struct Command {
@@ -31,11 +31,13 @@ struct Command {
   Eigen::Vector3d vel   = Eigen::Vector3d::Zero();     // [m/s]
   Eigen::Matrix3d R     = Eigen::Matrix3d::Identity(); // [SO3]
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();     // [rad/s]
-  std::array<double, 12> theta{};                      // [rad]
+  std::array<double, param::NUM_JOINTS> theta{};       // [rad]
+  double theta_t = 0.0;                                // [rad]
 };
 
 struct ViewerData {
-  std::array<mjtNum, 12> theta_d{};
+  std::array<mjtNum, param::NUM_JOINTS> theta_d{};
+  mjtNum theta_t = 0.0;
   mjvPerturb perturb{};
   bool paused = false;
   std::uint64_t reset_epoch = 0;
@@ -47,9 +49,9 @@ struct SimData {
   mjtNum time = 0;
   State state{};
   MST::StripState strip_state{};
-  std::array<Eigen::Vector3d, 7> aero_pos{};   // [m], body FRD; [6] = body ellipsoid
-  std::array<Eigen::Vector3d, 7> aero_force{}; // [N], body FRD; [6] = body ellipsoid
-  std::array<double, 12> theta_d{};
+  std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> aero_pos{};   // [m], body FRD; last = body ellipsoid
+  std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> aero_force{}; // [N], body FRD; last = body ellipsoid
+  std::array<double, param::NUM_JOINTS> theta_d{};
 };
 
 static inline Eigen::Matrix3d quat_to_R(const mjtNum* q) {
@@ -82,13 +84,14 @@ static inline Eigen::Matrix3d quat_to_R(const mjtNum* q) {
   return R;
 }
 
-static inline void FK(const std::array<double, 12>& theta, std::array<Eigen::Matrix4d, 12>& frame_poses) {
+static inline void FK(const std::array<double, param::NUM_JOINTS>& theta, std::array<Eigen::Matrix4d, param::NUM_JOINTS>& frame_poses) {
+  // Wing
   for (std::size_t wing=0; wing<2; ++wing) {
     Eigen::Matrix3d bRj = Eigen::Matrix3d::Identity();
     Eigen::Vector3d bpj = Eigen::Vector3d::Zero();
 
-    for (std::size_t j=wing*6; j<wing*6+6; ++j) {
-      const Eigen::Matrix4d& fixed_transform = param::WING_FIXED_TRANSFORM[j];
+    for (std::size_t j=wing*param::NUM_WING_JOINTS_PER_WING; j<wing*param::NUM_WING_JOINTS_PER_WING+param::NUM_WING_JOINTS_PER_WING; ++j) {
+      const Eigen::Matrix4d& fixed_transform = param::JOINT_FIXED_TRANSFORM[j];
       bpj += bRj * fixed_transform.block<3, 1>(0, 3);
       bRj = bRj * fixed_transform.block<3, 3>(0, 0);
 
@@ -103,6 +106,26 @@ static inline void FK(const std::array<double, 12>& theta, std::array<Eigen::Mat
       frame_poses[j].block<3, 3>(0, 0) = bRj;
       frame_poses[j].block<3, 1>(0, 3) = bpj;
     }
+  }
+
+  // Tail
+  Eigen::Matrix3d bRj = Eigen::Matrix3d::Identity();
+  Eigen::Vector3d bpj = Eigen::Vector3d::Zero();
+  for (std::size_t j=param::NUM_WING_JOINTS; j<param::NUM_WING_JOINTS+param::NUM_TAIL_JOINTS; ++j) {
+    const Eigen::Matrix4d& fixed_transform = param::JOINT_FIXED_TRANSFORM[j];
+    bpj += bRj * fixed_transform.block<3, 1>(0, 3);
+    bRj = bRj * fixed_transform.block<3, 3>(0, 0);
+
+    const double c = std::cos(theta[j]);
+    const double s = std::sin(theta[j]);
+    const Eigen::Vector3d y = bRj.col(1);
+    const Eigen::Vector3d z = bRj.col(2);
+    bRj.col(1) =  c*y + s*z;
+    bRj.col(2) = -s*y + c*z;
+
+    frame_poses[j].setIdentity();
+    frame_poses[j].block<3, 3>(0, 0) = bRj;
+    frame_poses[j].block<3, 1>(0, 3) = bpj;
   }
 }
 

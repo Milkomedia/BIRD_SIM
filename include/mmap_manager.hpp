@@ -17,24 +17,18 @@ namespace bird_mmap {
 inline constexpr std::uint32_t LOG_HZ = 250;
 inline constexpr std::uint32_t LOG_SECONDS = 3;
 inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
-inline constexpr std::size_t NUM_JOINTS = 12;
-inline constexpr std::size_t NUM_SEGMENTS = 6;
-inline constexpr std::size_t NUM_STRIPS = 2*(param::NH + param::NR + param::NM);
+inline constexpr std::size_t NUM_JOINTS = param::NUM_JOINTS;
+inline constexpr std::size_t NUM_SEGMENTS = 8;
+inline constexpr std::size_t NUM_STRIPS = 2*(param::NH + param::NR + param::NM + param::NT);
 inline constexpr std::size_t LOG_DECIMATION = static_cast<std::size_t>(1.0 / (param::SIM_DT_SEC * static_cast<double>(LOG_HZ)) + 0.5);
 
 static_assert(LOG_DECIMATION > 0, "Invalid mmap logging decimation.");
 static_assert(LOG_DECIMATION * LOG_HZ * std::chrono::duration_cast<std::chrono::microseconds>(param::SIM_DT_US).count() == 1000000, "LOG_HZ must divide the simulation rate exactly.");
 
-enum SampleFlags : std::uint32_t {
-  SAMPLE_FULL_ADDED_VALID = 1u << 1
-};
-
 struct SampleData {
   double time = 0.0;
   std::uint64_t step = 0;
   std::uint64_t reset_epoch = 0;
-  std::uint32_t flags = 0;
-  std::uint32_t reserved = 0;
 
   float state_pos[3]{};
   float state_vel[3]{};
@@ -44,6 +38,7 @@ struct SampleData {
   float cmd_vel[3]{};
   float cmd_R[9]{};
   float cmd_w[3]{};
+  float cmd_theta_t = 0.0f;
 
   float joint_theta[NUM_JOINTS]{};
   float joint_theta_dot[NUM_JOINTS]{};
@@ -51,7 +46,6 @@ struct SampleData {
   float joint_theta_cmd[NUM_JOINTS]{};
   float servo_torque[NUM_JOINTS]{};
   float damping_torque[NUM_JOINTS]{};
-  float total_torque[NUM_JOINTS]{};
 
   float segment_pos[NUM_SEGMENTS][3]{};
   float segment_force[NUM_SEGMENTS][3]{};
@@ -59,7 +53,6 @@ struct SampleData {
   float body_elipsoid_pos[3]{};
   float body_elipsoid_force[3]{};
   float body_elipsoid_torque[3]{};
-  float full_added_time = 0.0f;
 
   float strip_alpha[NUM_STRIPS]{};
   float strip_alpha_dot[NUM_STRIPS]{};
@@ -104,8 +97,8 @@ struct alignas(8) MMapHeader {
   std::uint32_t nh = 0;
   std::uint32_t nr = 0;
   std::uint32_t nm = 0;
-  std::uint32_t strip_order = 0;
   std::uint32_t reserved0 = 0;
+  std::uint32_t nt = 0;
   std::uint64_t write_count = 0;
   std::uint64_t start_time_ns = 0;
   std::uint64_t schema_hash = 0;
@@ -127,18 +120,20 @@ struct ChannelDescriptor {
   std::uint8_t reserved[15]{};
 };
 
-inline constexpr std::size_t SLOT_PAD = (8 - (sizeof(SampleData) % 8)) % 8;
-
 struct alignas(8) Slot {
   std::uint64_t seq = 0;
   SampleData data{};
-  std::array<std::uint8_t, SLOT_PAD> pad{};
 };
 
 static_assert(sizeof(MMapHeader) == 128, "MMapHeader ABI changed.");
-static_assert(offsetof(MMapHeader, write_count) == 64, "write_count must be 8-byte aligned.");
+static_assert(offsetof(MMapHeader, reserved0) == 52 && offsetof(MMapHeader, nt) == 56, "MMapHeader strip-count layout changed.");
+static_assert(offsetof(MMapHeader, write_count) == 64, "MMapHeader write_count offset changed.");
+static_assert(offsetof(ChannelDescriptor, offset) == 72 && offsetof(ChannelDescriptor, dtype) == 80, "ChannelDescriptor field layout changed.");
 static_assert(sizeof(ChannelDescriptor) == 96, "ChannelDescriptor ABI changed.");
+static_assert(offsetof(ChannelDescriptor, offset) == 72 && offsetof(ChannelDescriptor, dtype) == 80, "ChannelDescriptor field layout changed.");
 static_assert(std::is_standard_layout<SampleData>::value, "SampleData must have a stable standard layout.");
+static_assert(offsetof(SampleData, time) == 0 && offsetof(SampleData, step) == 8 && offsetof(SampleData, reset_epoch) == 16 && offsetof(SampleData, state_pos) == 24, "SampleData prefix layout changed.");
+static_assert(offsetof(Slot, data) == 8, "Slot data offset changed.");
 static_assert(alignof(Slot) == 8 && sizeof(Slot) % 8 == 0, "Slot must be 8-byte aligned.");
 
 class MMapLogger {
@@ -151,7 +146,7 @@ public:
 
   void open();
   void close();
-  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, double full_added_time, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
+  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
 
 private:
   std::string path_;

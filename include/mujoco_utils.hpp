@@ -16,11 +16,6 @@
 
 namespace mj_utils {
 
-  inline constexpr std::array<const char*, 12> kActuatorNames = {
-    "motor_J1", "motor_J2", "motor_J3", "motor_J4", "motor_J5", "motor_J6", 
-    "motor_J7", "motor_J8", "motor_J9", "motor_J10", "motor_J11", "motor_J12",
-  };
-
   inline mjModel* g_model = nullptr;
   inline mjData* g_data = nullptr;
 
@@ -32,9 +27,10 @@ namespace mj_utils {
   inline mjUI g_ui;
   inline mjuiState g_ui_state;
 
-  inline std::array<int, 12> g_actuator_ids{};
-  inline std::array<int, 12> g_joint_qpos_adrs{};
-  inline std::array<mjtNum, 12> g_command_theta{};
+  inline std::array<int, param::NUM_JOINTS> g_actuator_ids{};
+  inline std::array<int, param::NUM_JOINTS> g_joint_qpos_adrs{};
+  inline std::array<mjtNum, param::NUM_JOINTS> g_command_theta{};
+  inline mjtNum g_command_theta_t = 0.0;
 
   inline bool g_left_pressed = false;
   inline bool g_middle_pressed = false;
@@ -278,10 +274,12 @@ namespace mj_utils {
   }
 
   inline void append_strip_frame_and_plate(const Eigen::Matrix4d& world_T_strip, const double l, const double width) {
-    const int required_geoms = l > 0.0 ? 4 : 3;
+    const bool draw_plate = l > 0.0 && width > 0.0;
+    const int required_geoms = draw_plate ? 4 : 3;
     if (g_scene.maxgeom-g_scene.ngeom < required_geoms) {return;}
 
     append_frame(world_T_strip, STRIP_FRAME_SCALE*FRAME_AXIS_LENGTH, STRIP_FRAME_SCALE*FRAME_ARROW_WIDTH);
+    if (!draw_plate) {return;}
 
     constexpr float gray[4] = {0.70f, 0.70f, 0.70f, 0.30f};
     const Eigen::Vector3d origin = world_T_strip.block<3, 1>(0, 3);
@@ -309,7 +307,7 @@ namespace mj_utils {
     for (std::size_t i=0; i<param::NR; ++i) {
       world_T_strip.block<3, 3>(0, 0) = world_R_body * Qri[i];
       world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body * p[idx0+i];
-      const double l = param::L_TRI + param::DL_R*static_cast<double>(i);
+      const double l = param::C_R0 + param::DL_R*static_cast<double>(i);
       const double width = param::DY_R*std::abs(cos_psi[i]);
       append_strip_frame_and_plate(world_T_strip, l, width);
     }
@@ -324,7 +322,7 @@ namespace mj_utils {
     world_T_strip.block<3, 3>(0, 0) = world_R_body * Qsi;
     for (std::size_t i=0; i<param::NH; ++i) {
       world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body * p[idx0+i];
-      const double l = param::L_ROOT + param::DL_H * static_cast<double>(i);
+      const double l = param::C_H0 + param::DL_H * static_cast<double>(i);
       append_strip_frame_and_plate(world_T_strip, l, width);
     }
   }
@@ -336,15 +334,44 @@ namespace mj_utils {
 
     Eigen::Matrix4d world_T_strip = Eigen::Matrix4d::Identity();
     world_T_strip.block<3, 3>(0, 0) = world_R_body * Qsi;
-    for (std::size_t i=0; i<param::DECLINE_IDX; ++i) {
+    for (std::size_t i=0; i<param::DECLINE_IDX_K; ++i) {
       world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body * p[idx0+i];
-      const double l = param::L_SEC + param::DL_M1 * static_cast<double>(i);
+      const double l = param::C_M0 + param::DL_M1 * static_cast<double>(i);
       append_strip_frame_and_plate(world_T_strip, l, width);
     }
-    for (std::size_t i=param::DECLINE_IDX; i<param::NM; ++i) {
+    for (std::size_t i=param::DECLINE_IDX_K; i<param::NM; ++i) {
       world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body * p[idx0+i];
-      const double l = param::L_MPRI + param::DL_M2 * static_cast<double>(i-param::DECLINE_IDX);
+      const double l = param::C_MK + param::DL_M2 * static_cast<double>(i-param::DECLINE_IDX_K);
       append_strip_frame_and_plate(world_T_strip, l, width);
+    }
+  }
+
+  inline void append_tail_strip_frames(const std::array<Eigen::Vector3d, 2*param::NT>& p, const std::array<Eigen::Matrix3d, 2>& bR_t, const double theta_t, const Eigen::Matrix4d& wTb) {
+    const Eigen::Matrix3d world_R_body = wTb.block<3, 3>(0, 0);
+    const Eigen::Vector3d world_p_body = wTb.block<3, 1>(0, 3);
+    const double sin_theta_t = std::sin(theta_t);
+    const double cos_theta_t = std::cos(theta_t);
+    const double side_width = param::C_T*std::abs(sin_theta_t)/static_cast<double>(param::NT_S);
+    const double sin_theta_t2 = sin_theta_t*sin_theta_t;
+    Eigen::Matrix4d world_T_strip = Eigen::Matrix4d::Identity();
+
+    for (std::size_t section=0; section<2; ++section) {
+      const std::size_t idx0 = section*param::NT;
+      world_T_strip.block<3, 3>(0, 0) = world_R_body*bR_t[section];
+
+      for (std::size_t i=0; i<param::NT_R; ++i) {
+        world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body*p[idx0+i];
+        append_strip_frame_and_plate(world_T_strip, param::C_T, param::DY_T);
+      }
+
+      if (side_width <= 0.0) {continue;}
+      for (std::size_t i=0; i<param::NT_S; ++i) {
+        const double n = (static_cast<double>(i)+0.5)/static_cast<double>(param::NT_S);
+        const double radicand = std::max(0.0, 1.0-n*n*sin_theta_t2);
+        const double chord = param::C_T*std::max(0.0, std::sqrt(radicand)-n*cos_theta_t);
+        world_T_strip.block<3, 1>(0, 3) = world_p_body + world_R_body*p[idx0+param::NT_R+i];
+        append_strip_frame_and_plate(world_T_strip, chord, side_width);
+      }
     }
   }
 
@@ -495,6 +522,10 @@ namespace mj_utils {
       {mjITEM_SLIDERNUM, "J10", 2, &g_command_theta[9], "-1.5707963268 2.6179938780"},
       {mjITEM_SLIDERNUM, "J11", 2, &g_command_theta[10], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "J12", 2, &g_command_theta[11], "-2.6179938780 1.5707963268"},
+      {mjITEM_STATIC, "", 1, nullptr, " "},
+      {mjITEM_SLIDERNUM, "J13", 2, &g_command_theta[param::NUM_WING_JOINTS], "-1.5707963268 1.5707963268"},
+      {mjITEM_SLIDERNUM, "J14", 2, &g_command_theta[param::NUM_WING_JOINTS+1], "-1.5707963268 1.5707963268"},
+      {mjITEM_SLIDERNUM, "theta_t", 2, &g_command_theta_t, "0 1.5707963268"},
       {mjITEM_SELECT, "arrow", 2, &g_arrow_quantity, "none\nv [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
       {mjITEM_END}
     };
@@ -508,7 +539,11 @@ namespace mj_utils {
 
   inline void render_joint_current_overlay() {
     if (!g_model || !g_data || g_ui.nsect < 1) {return;}
-    constexpr std::array<int, 12> kSliderItemIndices = {0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12};
+    constexpr std::array<int, param::NUM_JOINTS> kSliderItemIndices = []() {
+      std::array<int, param::NUM_JOINTS> result{};
+      for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {result[i] = static_cast<int>(i + i/param::NUM_WING_JOINTS_PER_WING);}
+      return result;
+    }();
 
     constexpr int marker_width = 4;
     constexpr float marker_r = 1.00f;
@@ -537,7 +572,7 @@ namespace mj_utils {
       if (!(upper > lower)) {continue;}
 
       const double current = static_cast<double>(g_data->qpos[qpos_adr]);
-      const double ratio =+ std::clamp((current - lower) / (upper - lower), 0.0, 1.0);
+      const double ratio = std::clamp((current - lower) / (upper - lower), 0.0, 1.0);
 
       const int marker_center = ui_viewport.left + item.rect.left + mju_round(ratio * static_cast<double>(item.rect.width));
 
@@ -585,8 +620,8 @@ namespace mj_utils {
     g_actuator_ids.fill(-1);
     g_joint_qpos_adrs.fill(-1);
 
-    for (std::size_t i = 0; i < 12; ++i) {
-      const int actuator_id =mj_name2id(g_model, mjOBJ_ACTUATOR, kActuatorNames[i]);
+    for (std::size_t i = 0; i < param::NUM_JOINTS; ++i) {
+      const int actuator_id = mj_name2id(g_model, mjOBJ_ACTUATOR, param::ACTUATOR_NAMES[i]);
       g_actuator_ids[i] = actuator_id;
 
       if (actuator_id < 0) {continue;}

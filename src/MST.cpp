@@ -19,7 +19,9 @@ void MST::reset() {
   aero_torque_.fill(zero);
   added_mass_pos_.fill(zero);
   for (Eigen::Matrix<double, 6, 6>& matrix : added_mass_matrix_) {matrix.setZero();}
-  aero_pos_.back() = param::ELIPSOID_CENTER_POS;
+  tail_chord_.fill(0.0);
+  tail_width_.fill(0.0);
+  aero_pos_.back() = param::ELLIPSOID_CENTER_POS;
 }
 
 void MST::update_body_elipsoid(const State& s) {
@@ -80,9 +82,9 @@ void MST::update_body_elipsoid(const State& s) {
       return result*inv_dx2;
     };
 
-    const double dx = param::ELIPSOID_SIZE.x();
-    const double dy = param::ELIPSOID_SIZE.y();
-    const double dz = param::ELIPSOID_SIZE.z();
+    const double dx = param::ELLIPSOID_SIZE.x();
+    const double dy = param::ELLIPSOID_SIZE.y();
+    const double dz = param::ELLIPSOID_SIZE.z();
     const double dx2 = dx*dx;
     const double dy2 = dy*dy;
     const double dz2 = dz*dz;
@@ -136,7 +138,7 @@ void MST::update_body_elipsoid(const State& s) {
     return out;
   }();
 
-  const Eigen::Vector3d lin_vel = s.R.transpose()*(s.vel-s.vel_f) + s.w.cross(param::ELIPSOID_CENTER_POS);
+  const Eigen::Vector3d lin_vel = s.R.transpose()*(s.vel-s.vel_f) + s.w.cross(param::ELLIPSOID_CENTER_POS);
   const Eigen::Vector3d& ang_vel = s.w;
   const double lin_speed = lin_vel.norm();
 
@@ -166,7 +168,7 @@ void MST::update_body_elipsoid(const State& s) {
   force -= drag_lin_coef*lin_vel;
   torque -= drag_ang_coef*ang_vel;
 
-  aero_pos_.back() = param::ELIPSOID_CENTER_POS;
+  aero_pos_.back() = param::ELLIPSOID_CENTER_POS;
   aero_force_.back() = force;
   aero_torque_.back() = torque;
 }
@@ -443,7 +445,7 @@ void MST::update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3
   std::array<Eigen::Vector3d, 2*param::NM>& p = strip_state_.p_m;
   std::array<Eigen::Vector3d, 2*param::NM>& v = strip_state_.v_m;
   std::array<Eigen::Vector3d, 2*param::NM>& a = strip_state_.a_m;
-  constexpr double dx = param::D_LPRI / (static_cast<double>(param::NM - param::DECLINE_IDX));
+  constexpr double dx = param::D_P / (static_cast<double>(param::NM - param::DECLINE_IDX_K));
 
   const Eigen::Vector3d drho_y  = dy * bRm0.col(1);
   const Eigen::Vector3d drho_xy = drho_y + dx * bRm0.col(0);
@@ -456,15 +458,46 @@ void MST::update_manus_stream_p_v_a(const std::size_t idx0, const Eigen::Matrix3
   p[idx0] = bpm0;
   v[idx0] = bRmi.transpose() * (RtVrel - bvm0);
   a[idx0] = bRmi.transpose() * (RtArel - bam0);
-  for (std::size_t i=1; i<param::DECLINE_IDX; ++i) {
+  for (std::size_t i=1; i<param::DECLINE_IDX_K; ++i) {
     p[idx0+i] = p[idx0+i-1] + drho_y;
     v[idx0+i] = v[idx0+i-1] + dv_y;
     a[idx0+i] = a[idx0+i-1] + da_y;
   }
-  for (std::size_t i=param::DECLINE_IDX; i<param::NM; ++i) {
+  for (std::size_t i=param::DECLINE_IDX_K; i<param::NM; ++i) {
     p[idx0+i] = p[idx0+i-1] + drho_xy;
     v[idx0+i] = v[idx0+i-1] + dv_xy;
     a[idx0+i] = a[idx0+i-1] + da_xy;
+  }
+}
+
+void MST::update_tail_section_p_v_a(const std::size_t section, const Eigen::Matrix3d& bRt, const Eigen::Vector3d& bpt0, const Eigen::Vector3d& bpj, const Eigen::Vector3d& bvj, const Eigen::Vector3d& baj, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& RtArel, const Eigen::Vector3d& omega, const Eigen::Vector3d& omega_dot, const double sin_theta_t, const double cos_theta_t) {
+  std::array<Eigen::Vector3d, 2*param::NT>& p = strip_state_.p_t;
+  std::array<Eigen::Vector3d, 2*param::NT>& v = strip_state_.v_t;
+  std::array<Eigen::Vector3d, 2*param::NT>& a = strip_state_.a_t;
+  const std::size_t idx0 = section*param::NT;
+  const Eigen::Matrix3d bRt_transpose = bRt.transpose();
+  const double span_sign = param::STRIP_SPAN_SIGN[section];
+  const double omega2 = omega.squaredNorm();
+
+  const auto update_at_position = [&](const std::size_t idx, const Eigen::Vector3d& position) {
+    const Eigen::Vector3d drho = position - bpj;
+    const Eigen::Vector3d point_velocity = bvj + omega.cross(drho);
+    const Eigen::Vector3d point_acceleration = baj + omega_dot.cross(drho) + omega*omega.dot(drho) - omega2*drho;
+    p[idx] = position;
+    v[idx] = bRt_transpose * (RtVrel - point_velocity);
+    a[idx] = bRt_transpose * (RtArel - point_acceleration);
+  };
+
+  for (std::size_t i=0; i<param::NT_R; ++i) {
+    const Eigen::Vector3d position = bpt0 + span_sign*param::DY_T*static_cast<double>(i)*bRt.col(1);
+    update_at_position(idx0+i, position);
+  }
+
+  const Eigen::Vector3d root_edge = bpt0 + span_sign*param::DY_T*(static_cast<double>(param::NT_R)-0.5)*bRt.col(1);
+  for (std::size_t i=0; i<param::NT_S; ++i) {
+    const double n = (static_cast<double>(i)+0.5)/static_cast<double>(param::NT_S);
+    const Eigen::Vector3d position = root_edge + n*param::C_T*(cos_theta_t*bRt.col(0) + span_sign*sin_theta_t*bRt.col(1));
+    update_at_position(idx0+param::NT_R+i, position);
   }
 }
 
@@ -493,6 +526,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
   constexpr double WAGNER_EPS2 = 0.3;
   constexpr double WAGNER_PHI0 = 1.0-WAGNER_A1-WAGNER_A2;
   constexpr double WAGNER_MIN_LIFT_SLOPE = 1.0e-6;
+  constexpr double MIN_ACTIVE_AREA = 1.0e-12;
   constexpr std::size_t WAGNER_SLOPE_OFFSET = 5; // +/-1 deg around alpha=0
   constexpr double INV_DT = 1.0 / param::SIM_DT_SEC;
   constexpr double HALF_RHO = 0.5 * param::AIR_DENSITY;
@@ -573,7 +607,7 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       return upper_weight*value[UPPER_SURFACE] + (1.0-upper_weight)*value[LOWER_SURFACE];
     };
 
-    if (U2 > 1e-12 && c > 0.0) {
+    if (U2 > 1e-12 && c > 0.0 && area > MIN_ACTIVE_AREA) {
       U = std::sqrt(U2);
       alpha = std::atan2(vz, vx);
 
@@ -846,7 +880,7 @@ void MST::update_full_added_mass_telemetry() {
       [&bRhi](const std::size_t) -> const Eigen::Matrix3d& {return bRhi;},
       [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_h[wing];},
       [this, wing](const std::size_t) {return strip_state_.wdot_h[wing].y();},
-      [](const std::size_t i) {return param::L_ROOT + param::DL_H*static_cast<double>(i);},
+      [](const std::size_t i) {return param::C_H0 + param::DL_H*static_cast<double>(i);},
       [&humerus_rotation](const std::size_t) {return param::DY_H*std::abs(humerus_rotation.cos_psi[0]);}
     );
 
@@ -855,7 +889,7 @@ void MST::update_full_added_mass_telemetry() {
       [&radius_rotation](const std::size_t i) -> const Eigen::Matrix3d& {return radius_rotation.bRri[i];},
       [this, wing](const std::size_t i) -> const Eigen::Vector3d& {return strip_state_.w_r[wing*param::NR+i];},
       [this, wing](const std::size_t i) {return strip_state_.wdot_r[wing*param::NR+i].y();},
-      [](const std::size_t i) {return param::L_TRI + param::DL_R*static_cast<double>(i);},
+      [](const std::size_t i) {return param::C_R0 + param::DL_R*static_cast<double>(i);},
       [&radius_rotation](const std::size_t i) {return param::DY_R*std::abs(radius_rotation.cos_psi[i]);}
     );
 
@@ -864,13 +898,26 @@ void MST::update_full_added_mass_telemetry() {
       [&bRmi](const std::size_t) -> const Eigen::Matrix3d& {return bRmi;},
       [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_m[wing];},
       [this, wing](const std::size_t) {return strip_state_.wdot_m[wing].y();},
-      [](const std::size_t i) {return i < param::DECLINE_IDX ? param::L_SEC + param::DL_M1*static_cast<double>(i) : param::L_MPRI + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX);},
+      [](const std::size_t i) {return i < param::DECLINE_IDX_K ? param::C_M0 + param::DL_M1*static_cast<double>(i) : param::C_MK + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX_K);},
       [&manus_rotation](const std::size_t) {return param::DY_M*std::abs(manus_rotation.cos_psi[0]);}
+    );
+  }
+
+  constexpr std::size_t tail_state_idx0 = 2*(param::NH+param::NR+param::NM);
+  for (std::size_t section=0; section<2; ++section) {
+    const Eigen::Matrix3d& bRt = strip_state_.bR_t[section];
+    update_full_added_mass_segment<param::NT>(
+      strip_state_.v_t, strip_state_.a_t, section*param::NT, tail_state_idx0+section*param::NT,
+      [&bRt](const std::size_t) -> const Eigen::Matrix3d& {return bRt;},
+      [this, section](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_t[section];},
+      [this, section](const std::size_t) {return strip_state_.wdot_t[section].y();},
+      [this](const std::size_t i) {return tail_chord_[i];},
+      [this](const std::size_t i) {return tail_width_[i];}
     );
   }
 }
 
-void MST::update(const State& s, const bool acceleration_bias_only, const bool update_loads, const bool update_telemetry) {
+void MST::update(const State& s, const double theta_t, const bool acceleration_bias_only, const bool update_loads, const bool update_telemetry) {
   const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
   const Eigen::Vector3d body_acc = acceleration_bias_only ? zero : s.acc;
   const Eigen::Vector3d body_w_dot = acceleration_bias_only ? zero : s.w_dot;
@@ -879,7 +926,7 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
   const Eigen::Vector3d RtArel = -(Rt * body_acc); // Steady freestream: acc_f = 0.
 
   for (std::size_t wing=0; wing<2; ++wing) { // wing=0 : right wing, wing=1 : left wing
-    const std::size_t j0 = 6*wing;
+    const std::size_t j0 = param::NUM_WING_JOINTS_PER_WING*wing;
 
     Eigen::Vector3d omega_theta_h;
     Eigen::Vector3d omega_theta_r;
@@ -910,7 +957,7 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
     Eigen::Vector3d baj_m;
 
     // Forward recursion of joint angular and linear kinematics.
-    for (std::size_t local_j=0; local_j<6; ++local_j) {
+    for (std::size_t local_j=0; local_j<param::NUM_WING_JOINTS_PER_WING; ++local_j) {
       const std::size_t j = j0 + local_j;
       const Eigen::Vector3d bRje1 = s.bTj[j].block<3, 1>(0, 0);
       const Eigen::Vector3d bpj = s.bTj[j].block<3, 1>(0, 3);
@@ -1052,7 +1099,7 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         [&bRhi](const std::size_t) -> const Eigen::Matrix3d& {return bRhi;},
         [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_h[wing];},
         [this, wing](const std::size_t) {return strip_state_.wdot_h[wing].y();},
-        [](const std::size_t i) {return param::L_ROOT + param::DL_H*static_cast<double>(i);},
+        [](const std::size_t i) {return param::C_H0 + param::DL_H*static_cast<double>(i);},
         [&humerus_rotation](const std::size_t) {return param::DY_H*std::abs(humerus_rotation.cos_psi[0]);},
         update_telemetry
       );
@@ -1062,7 +1109,7 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         [&radius_rotation](const std::size_t i) -> const Eigen::Matrix3d& {return radius_rotation.bRri[i];},
         [this, wing](const std::size_t i) -> const Eigen::Vector3d& {return strip_state_.w_r[wing*param::NR+i];},
         [this, wing](const std::size_t i) {return strip_state_.wdot_r[wing*param::NR+i].y();},
-        [](const std::size_t i) {return param::L_TRI + param::DL_R*static_cast<double>(i);},
+        [](const std::size_t i) {return param::C_R0 + param::DL_R*static_cast<double>(i);},
         [&radius_rotation](const std::size_t i) {return param::DY_R*std::abs(radius_rotation.cos_psi[i]);},
         update_telemetry
       );
@@ -1072,10 +1119,89 @@ void MST::update(const State& s, const bool acceleration_bias_only, const bool u
         [&bRmi](const std::size_t) -> const Eigen::Matrix3d& {return bRmi;},
         [this, wing](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_m[wing];},
         [this, wing](const std::size_t) {return strip_state_.wdot_m[wing].y();},
-        [](const std::size_t i) {return i < param::DECLINE_IDX ? param::L_SEC + param::DL_M1*static_cast<double>(i) : param::L_MPRI + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX);},
+        [](const std::size_t i) {return i < param::DECLINE_IDX_K ? param::C_M0 + param::DL_M1*static_cast<double>(i) : param::C_MK + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX_K);},
         [&manus_rotation](const std::size_t) {return param::DY_M*std::abs(manus_rotation.cos_psi[0]);},
         update_telemetry
       );
+    }
+  }
+
+  { // Tail kinematics
+    Eigen::Vector3d b_omega_b_theta = s.w;
+    Eigen::Vector3d b_omega_dot_b_theta = body_w_dot;
+    Eigen::Vector3d bpj_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d bvj_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d baj_prev = Eigen::Vector3d::Zero();
+
+    for (std::size_t local_j=0; local_j<param::NUM_TAIL_JOINTS; ++local_j) {
+      const std::size_t j = param::NUM_WING_JOINTS + local_j;
+      const Eigen::Vector3d bRje1 = s.bTj[j].block<3, 1>(0, 0);
+      const Eigen::Vector3d bpj = s.bTj[j].block<3, 1>(0, 3);
+      const Eigen::Vector3d drho = bpj - bpj_prev;
+      const double omega2 = b_omega_b_theta.squaredNorm();
+      const Eigen::Vector3d bvj = bvj_prev + b_omega_b_theta.cross(drho);
+      const Eigen::Vector3d baj = baj_prev + b_omega_dot_b_theta.cross(drho) + b_omega_b_theta*b_omega_b_theta.dot(drho) - omega2*drho;
+      const Eigen::Vector3d omega_j = s.theta_dot[j] * bRje1;
+      const double theta_ddot = acceleration_bias_only ? 0.0 : s.theta_ddot[j];
+
+      b_omega_dot_b_theta += theta_ddot*bRje1 + b_omega_b_theta.cross(omega_j);
+      b_omega_b_theta += omega_j;
+      bpj_prev = bpj;
+      bvj_prev = bvj;
+      baj_prev = baj;
+    }
+
+    const std::size_t tail_joint_idx = param::NUM_JOINTS-1;
+    const Eigen::Matrix3d bRj = s.bTj[tail_joint_idx].block<3, 3>(0, 0);
+    const double sin_theta_t = std::sin(theta_t);
+    const double cos_theta_t = std::cos(theta_t);
+    strip_state_.theta_t = theta_t;
+
+    tail_chord_.fill(param::C_T);
+    tail_width_.fill(param::DY_T);
+    // The side-strip midpoint follows the radial leading edge.  Its chord is the
+    // circular trailing-edge intercept minus that leading-edge x coordinate.
+    const double side_width = param::C_T*std::abs(sin_theta_t)/static_cast<double>(param::NT_S);
+    const double sin_theta_t2 = sin_theta_t*sin_theta_t;
+    for (std::size_t i=0; i<param::NT_S; ++i) {
+      const double n = (static_cast<double>(i)+0.5)/static_cast<double>(param::NT_S);
+      const double radicand = std::max(0.0, 1.0-n*n*sin_theta_t2);
+      tail_chord_[param::NT_R+i] = param::C_T*std::max(0.0, std::sqrt(radicand)-n*cos_theta_t);
+      tail_width_[param::NT_R+i] = side_width;
+    }
+
+    constexpr std::size_t tail_state_idx0 = 2*(param::NH+param::NR+param::NM);
+    if (update_loads && side_width <= 1.0e-12) {
+      for (std::size_t section=0; section<2; ++section) {
+        for (std::size_t i=param::NT_R; i<param::NT; ++i) {
+          const std::size_t state_idx = tail_state_idx0+section*param::NT+i;
+          dynamic_stall_state_[state_idx] = {};
+          wagner_state_[state_idx] = {};
+        }
+      }
+    }
+
+    for (std::size_t section=0; section<2; ++section) {
+      const Eigen::Matrix4d& jTt0 = param::J_T_S0[6+section];
+      Eigen::Matrix3d& bRt = strip_state_.bR_t[section];
+      bRt = bRj * jTt0.block<3, 3>(0, 0);
+      const Eigen::Vector3d bpt0 = bpj_prev + bRj*jTt0.block<3, 1>(0, 3);
+      update_tail_section_p_v_a(section, bRt, bpt0, bpj_prev, bvj_prev, baj_prev, RtVrel, RtArel, b_omega_b_theta, b_omega_dot_b_theta, sin_theta_t, cos_theta_t);
+      update_strip_w_wdot(strip_state_.w_t[section], strip_state_.wdot_t[section], bRt, b_omega_b_theta, b_omega_dot_b_theta, zero, zero);
+
+      if (update_loads) {
+        // Keep the LUT two-dimensional like the wing solver; c*dy carries the
+        // changing exposed planform area without a per-strip aspect-ratio term.
+        update_segment_aerodynamics<param::coeff::FLAT_CD, param::coeff::FLAT_CL, param::coeff::FLAT_CM, param::coeff::FLAT_GK_X0, param::coeff::FLAT_GK_ALPHA_STALL, param::coeff::FLAT_GK_ALPHA_STALL_NEG, param::NT>(
+          strip_state_.p_t, strip_state_.v_t, strip_state_.a_t, section*param::NT, tail_state_idx0+section*param::NT, NUM_WING_LOADS+section,
+          [&bRt](const std::size_t) -> const Eigen::Matrix3d& {return bRt;},
+          [this, section](const std::size_t) -> const Eigen::Vector3d& {return strip_state_.w_t[section];},
+          [this, section](const std::size_t) {return strip_state_.wdot_t[section].y();},
+          [this](const std::size_t i) {return tail_chord_[i];},
+          [this](const std::size_t i) {return tail_width_[i];},
+          update_telemetry
+        );
+      }
     }
   }
 }

@@ -21,42 +21,6 @@
 #include <cstdint>
 #include <cstdio>
 
-static std::atomic<bool> g_stop{false};
-
-template <typename T, std::size_t N>
-class SpscMailbox {
-  static_assert(N >= 2, "SpscMailbox requires at least two slots.");
-
- public:
-  bool push(const T& value) noexcept {
-    const std::size_t write = write_index_.load(std::memory_order_relaxed);
-    const std::size_t next = (write + 1) % N;
-    if (next == read_index_.load(std::memory_order_acquire)) {return false;}
-    slots_[write] = value;
-    write_index_.store(next, std::memory_order_release);
-    return true;
-  }
-
-  bool pop_latest(T& value) noexcept {
-    std::size_t read = read_index_.load(std::memory_order_relaxed);
-    const std::size_t write = write_index_.load(std::memory_order_acquire);
-    if (read == write) {return false;}
-
-    do {
-      value = slots_[read];
-      read = (read + 1) % N;
-    } while (read != write);
-
-    read_index_.store(read, std::memory_order_release);
-    return true;
-  }
-
- private:
-  std::array<T, N> slots_{};
-  std::atomic<std::size_t> write_index_{0};
-  std::atomic<std::size_t> read_index_{0};
-};
-
 // ===== Main =====
 int main(int argc, char** argv) {
   // ---------------- [ Initialize MuJoCo and viewer ] ----------------
@@ -76,13 +40,13 @@ int main(int argc, char** argv) {
   const int imu_gyro_sensor_adr = m->sensor_adr[mj_name2id(m, mjOBJ_SENSOR, "imu_gyro")];
   const int imu_angacc_sensor_adr = m->sensor_adr[mj_name2id(m, mjOBJ_SENSOR, "imu_angacc")];
 
-  std::array<int, 12> servo_qpos_address{};
-  std::array<int, 12> servo_qvel_address{};
-  std::array<double, 12> joint_passive_damping{};
-  for (std::size_t i=0; i<12; ++i) {
+  std::array<int, param::NUM_JOINTS> servo_qpos_address{};
+  std::array<int, param::NUM_JOINTS> servo_qvel_address{};
+  std::array<double, param::NUM_JOINTS> joint_passive_damping{};
+  for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
     const int actuator_id = mj_utils::g_actuator_ids[i];
     const int joint_id = m->actuator_trnid[2 * actuator_id];
-    const std::size_t motor_idx = i % param::MOTOR_REDUCTION_RATIO.size();
+    const std::size_t motor_idx = param::MOTOR_MODEL_INDEX[i];
     servo_qpos_address[i] = m->jnt_qposadr[joint_id];
     servo_qvel_address[i] = m->jnt_dofadr[joint_id];
     joint_passive_damping[i] = static_cast<double>(m->dof_damping[servo_qvel_address[i]]);
@@ -93,9 +57,9 @@ int main(int argc, char** argv) {
   mj_setConst(m, sim_data);
   mj_forward(m, sim_data);
 
-  constexpr std::array<const char*, 6> wing_plate_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6"};
-  std::array<int, 6> wing_plate_ids{};
-  for (std::size_t i=0; i<wing_plate_ids.size(); ++i) {wing_plate_ids[i] = mj_name2id(m, mjOBJ_BODY, wing_plate_names[i]);}
+  constexpr std::array<const char*, MST::NUM_SURFACE_LOADS> surface_body_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6", "Tail2", "Tail2"};
+  std::array<int, MST::NUM_SURFACE_LOADS> surface_body_ids{};
+  for (std::size_t i=0; i<surface_body_ids.size(); ++i) {surface_body_ids[i] = mj_name2id(m, mjOBJ_BODY, surface_body_names[i]);}
   const int body_id = mj_name2id(m, mjOBJ_BODY, "body");
 
   const mjtNum* const sensor_pos  = sim_data->sensordata + imu_pos_sensor_adr;
@@ -108,14 +72,15 @@ int main(int argc, char** argv) {
   mj_utils::g_command_theta = param::INITIAL_DES_THETA;
   mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);
 
-  // ---------------- [ Shared mailboxes ] ----------------
-  SpscMailbox<ViewerData, 8> viewer_mailbox;
+  // ---------------- [ Shared data ] ----------------
   ViewerData initial_viewer_data{};
   initial_viewer_data.theta_d = mj_utils::g_command_theta;
+  initial_viewer_data.theta_t = mj_utils::g_command_theta_t;
   initial_viewer_data.perturb = mj_utils::g_perturb;
   initial_viewer_data.paused = mj_utils::g_paused;
   initial_viewer_data.reset_epoch = mj_utils::g_reset_epoch;
-  (void)viewer_mailbox.push(initial_viewer_data);
+  std::mutex viewer_mtx;
+  ViewerData shared_viewer_data = initial_viewer_data;
 
   std::mutex sim_mtx;
   SimData shared_sim_data{std::vector<mjtNum>(static_cast<std::size_t>(m->nq)), std::vector<mjtNum>(static_cast<std::size_t>(m->nv))};
@@ -143,12 +108,14 @@ int main(int argc, char** argv) {
   }
 
   // ---------------- [ Simulation thread ] ----------------
+  static std::atomic<bool> g_stop{false};
+  
   std::thread th_sim([&]() {
     std::vector<Actuator::Servo> servo;
-    servo.reserve(12);
+    servo.reserve(param::NUM_JOINTS);
 
     // --- Servo configuration ---
-    std::array<Actuator::MotorParameters, 6> motor_parameters{};
+    std::array<Actuator::MotorParameters, param::NUM_MOTOR_MODELS> motor_parameters{};
     for (std::size_t i=0; i<motor_parameters.size(); ++i) {
       motor_parameters[i].ohm = param::MOTOR_OHM[i];
       motor_parameters[i].h = param::MOTOR_H[i];
@@ -161,29 +128,27 @@ int main(int argc, char** argv) {
       motor_parameters[i].esc_time_constant = param::MOTOR_ESC_TIME_CONSTANT[i];
       motor_parameters[i].kP = param::MOTOR_KP[i];
       motor_parameters[i].kD = param::MOTOR_KD[i];
-      motor_parameters[i].dt = param::MOTOR_DT[i];
+      motor_parameters[i].dt = param::SIM_DT_SEC;
     }
-    for (std::size_t i=0; i<12; ++i) {servo.emplace_back(motor_parameters[i % motor_parameters.size()]);}
+    for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {servo.emplace_back(motor_parameters[param::MOTOR_MODEL_INDEX[i]]);}
 
     MST mst{};
     bird_mmap::MMapLogger mmap_logger{};
     mmap_logger.open();
     State s{};
     Command cmd{};
-    ViewerData viewer_data{};
+    ViewerData viewer_data = initial_viewer_data;
     std::vector<mjtNum> snapshot_qpos(static_cast<std::size_t>(m->nq));
     std::vector<mjtNum> snapshot_qvel(static_cast<std::size_t>(m->nv));
     std::vector<mjtNum> added_mass_jac(6*static_cast<std::size_t>(m->nv));
     std::vector<mjtNum> added_mass_inertia_jac(6*static_cast<std::size_t>(m->nv));
-    std::array<Eigen::Vector3d, 7> applied_aero_pos{};
-    std::array<Eigen::Vector3d, 7> applied_aero_force{};
-    std::array<double, 12> servo_torque{};
-    std::array<double, 12> damping_torque{};
+    std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> applied_aero_pos{};
+    std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> applied_aero_force{};
+    std::array<double, param::NUM_JOINTS> servo_torque{};
+    std::array<double, param::NUM_JOINTS> damping_torque{};
     mjtNum snapshot_time = sim_data->time;
-    double full_added_time = -1.0;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::uint64_t sim_step = 0;
-    std::size_t log_decimation = 0;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -194,8 +159,10 @@ int main(int argc, char** argv) {
     while (!g_stop.load(std::memory_order_acquire)) {
       next_tick += param::SIM_DT_US;
 
-      // --- Consume the newest viewer command without locking the sim thread. ---
-      (void)viewer_mailbox.pop_latest(viewer_data);
+      { // Consume the newest viewer command without blocking the sim thread.
+        std::unique_lock<std::mutex> viewer_lk(viewer_mtx, std::try_to_lock);
+        if (viewer_lk.owns_lock()) {viewer_data = shared_viewer_data;}
+      }
 
       // --- Check reset request ---
       const bool reset_requested = viewer_data.reset_epoch != handled_reset_epoch;
@@ -208,50 +175,59 @@ int main(int argc, char** argv) {
         applied_aero_force.fill(Eigen::Vector3d::Zero());
         servo_torque.fill(0.0);
         damping_torque.fill(0.0);
-        full_added_time = -1.0;
         sim_step = 0;
-        log_decimation = 0;
         handled_reset_epoch = viewer_data.reset_epoch;
       }
 
       snapshot_elapsed += param::SIM_DT_US;
       const bool snapshot_due = reset_requested || snapshot_elapsed >= param::RENDER_DT_US;
       if (snapshot_due) {snapshot_elapsed = reset_requested ? std::chrono::steady_clock::duration::zero() : snapshot_elapsed - param::RENDER_DT_US;}
-      bool log_due = false;
-      if (!reset_requested && !viewer_data.paused) {
-        log_due = ++log_decimation >= bird_mmap::LOG_DECIMATION;
-        if (log_due) {log_decimation = 0;}
-      }
+       const bool log_due = !reset_requested && !viewer_data.paused && (sim_step + 1) % bird_mmap::LOG_DECIMATION == 0;
 
-      // --- ELRS RC parse ---
-      if (elrs_enabled && elrs.update(elrs_channels)) {
-        constexpr double ELRS_TO_RAD = M_PI / 1638.0;
-        constexpr double ELRS_TO_ONE = 2.0 / 1638.0;
-        cmd.theta[0]  = param::INITIAL_DES_THETA[0] - (static_cast<double>(elrs_channels[1]) - 992.0) * ELRS_TO_RAD;
-        cmd.theta[1]  = param::INITIAL_DES_THETA[1] - (static_cast<double>(elrs_channels[3]) - 992.0) * (0.25 * ELRS_TO_RAD);
-        cmd.theta[2]  = param::INITIAL_DES_THETA[2] - (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        cmd.theta[3]  = param::INITIAL_DES_THETA[3] + param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        cmd.theta[4]  = J5_model(cmd.theta[2]);
-        cmd.theta[5]  = param::INITIAL_DES_THETA[5] - param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        cmd.theta[6]  = param::INITIAL_DES_THETA[6] - (static_cast<double>(elrs_channels[1]) - 992.0) * ELRS_TO_RAD;
-        cmd.theta[7]  = param::INITIAL_DES_THETA[7] - (static_cast<double>(elrs_channels[3]) - 992.0) * (0.25 * ELRS_TO_RAD);
-        cmd.theta[8]  = param::INITIAL_DES_THETA[8] - (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        cmd.theta[9]  = param::INITIAL_DES_THETA[9] + param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
-        cmd.theta[10] = J5_model(cmd.theta[8]);
-        cmd.theta[11] = param::INITIAL_DES_THETA[11] - param::KIN_GAIN * (static_cast<double>(elrs_channels[2]) - 172.0) * (0.50 * ELRS_TO_RAD);
+      // --- ELRS RC command ---
+      if (elrs_enabled) {
+        (void)elrs.update(elrs_channels);
 
-        // manual external wind gust
-        const double vel_x = (static_cast<double>(elrs_channels[10]) - 992.0) * ELRS_TO_ONE * 20.0;
-        const double vel_y = (static_cast<double>(elrs_channels[15]) - 992.0) * ELRS_TO_ONE * 10.0;
-        const double vel_z = (static_cast<double>(elrs_channels[11]) - 992.0) * ELRS_TO_ONE * 10.0;
-        s.vel_f = Eigen::Vector3d(vel_x, vel_y, vel_z);
+        const double phase = 6.0*M_PI*(static_cast<double>(elrs_channels[2])-172.0)/1638.0*static_cast<double>(sim_data->time);
+        const double sin_phase = std::sin(phase);
+        const double cos_phase = std::cos(phase);
+        const double flapping = 0.25*M_PI * static_cast<double>(elrs_channels[11]-172)/1638.0 * sin_phase;
+        const double pitching = 0.25*M_PI * static_cast<double>(elrs_channels[15]-992)/819.0 * cos_phase;
+        const double sweep = 0.25*M_PI * static_cast<double>(elrs_channels[1]-992)/819.0;
+
+        // asymmetric cosine
+        constexpr double TWO_PI = 2.0 * M_PI;
+        constexpr double FOLD_RATIO = 0.3; // Fold: 30%, unfold: 70%
+        const double folding_amplitude = 0.25 * M_PI * (static_cast<double>(elrs_channels[10]) - 172.0) / 1638.0;
+        const double normalized_phase = phase / TWO_PI;
+        const double cycle_ratio = normalized_phase - std::floor(normalized_phase);  // [0, 1)
+        double folding;
+        if (cycle_ratio < FOLD_RATIO) {folding =  folding_amplitude * (std::cos(M_PI * cycle_ratio / FOLD_RATIO) - 1.0);} // Unfolded -> folded
+        else                          {folding = -folding_amplitude * (1.0 + std::cos(M_PI * (cycle_ratio - FOLD_RATIO) / (1.0 - FOLD_RATIO)));}// Folded -> unfolded
+
+        cmd.theta[0]  = param::INITIAL_DES_THETA[0] + flapping;
+        cmd.theta[1]  = param::INITIAL_DES_THETA[1] + pitching;
+        cmd.theta[2]  = param::INITIAL_DES_THETA[2] + folding + sweep;
+        cmd.theta[3]  = param::INITIAL_DES_THETA[3] - param::KIN_GAIN*folding;
+        cmd.theta[4]  = J5_model(cmd.theta[2] - sweep);
+        cmd.theta[5]  = param::INITIAL_DES_THETA[5] + param::KIN_GAIN*folding;
+
+        cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping;
+        cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching;
+        cmd.theta[8]  = param::INITIAL_DES_THETA[8] + folding + sweep;
+        cmd.theta[9]  = param::INITIAL_DES_THETA[9] - param::KIN_GAIN*folding;
+        cmd.theta[10] = J5_model(cmd.theta[8] - sweep);
+        cmd.theta[11] = param::INITIAL_DES_THETA[11] + param::KIN_GAIN*folding;
+        for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = param::INITIAL_DES_THETA[i];}
+
+        s.vel_f = Eigen::Vector3d((static_cast<double>(elrs_channels[14])-992.0)*(2.0/1638.0)*10.0, 0.0, 0.0);
         
         // std::printf("[ELRS] %llu", static_cast<unsigned long long>(elrs.valid_frames()));
         // for (std::size_t i=0; i<elrs_channels.size(); ++i) {std::printf(" %4u", static_cast<unsigned int>(elrs_channels[i]));}
         // std::putchar('\n'); std::fflush(stdout);
       }
       if (!elrs_enabled) {
-        // for(std::size_t i=0; i<12; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
+        // for(std::size_t i=0; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
         constexpr double FLAP_FREQ = 3.0;  // [Hz]
         constexpr double FLAP_AMP  = M_PI / 2.0;  // [rad]
 
@@ -268,9 +244,11 @@ int main(int argc, char** argv) {
         cmd.theta[9] = static_cast<double>(viewer_data.theta_d[9]);
         cmd.theta[10] = J5_model(cmd.theta[8]);
         cmd.theta[11] = static_cast<double>(viewer_data.theta_d[11]);
+        for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
 
         s.vel_f = Eigen::Vector3d(-10.0, 0.0, 0.0);
       }
+      cmd.theta_t = static_cast<double>(viewer_data.theta_t);
 
       // --- Control and servo dynamics ---
       if (!reset_requested) {
@@ -294,42 +272,42 @@ int main(int argc, char** argv) {
             s.w(2) = static_cast<double>(-sensor_gyro[2]);
             s.R = quat_to_R(sensor_quat);
 
-            for (std::size_t i=0; i<12; ++i) {
+            for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
               s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
               s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
             }
           }
 
           // Servo is simulator-agnostic: feed it only the joint state.
-          for (std::size_t i=0; i<12; ++i) {
+          for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
             servo[i].desired_rad = cmd.theta[i];
             servo[i].step(s.theta[i], s.theta_dot[i]);
             sim_data->ctrl[mj_utils::g_actuator_ids[i]] = static_cast<mjtNum>(servo[i].motor_state.torque);
           }
 
           FK(s.theta, s.bTj);
-          mst.update_dynamics(s, log_due);
+          mst.update_dynamics(s, cmd.theta_t, log_due);
 
           const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
           const Eigen::Vector3d Gpb_FLU = param::NED_TO_FLU * s.pos;
 
           // Transfer MST's current added inertia to MuJoCo's generalized mass.
-          add_spatial_inertias(m, sim_data, mst.added_mass_positions(), mst.added_mass_matrices(), wing_plate_ids, GRb_FLU, Gpb_FLU, added_mass_jac.data(), added_mass_inertia_jac.data());
+          add_spatial_inertias(m, sim_data, mst.added_mass_positions(), mst.added_mass_matrices(), surface_body_ids, GRb_FLU, Gpb_FLU, added_mass_jac.data(), added_mass_inertia_jac.data());
 
           // Apply current t_k aerodynamic wrenches.
           mjv_applyPerturbForce(m, sim_data, &viewer_data.perturb);
-          const std::array<Eigen::Vector3d, 7>& bp = mst.positions();
-          const std::array<Eigen::Vector3d, 7>& bF = mst.forces();
-          const std::array<Eigen::Vector3d, 7>& bT = mst.torques();
+          const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& bp = mst.positions();
+          const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& bF = mst.forces();
+          const std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS>& bT = mst.torques();
 
-          for (std::size_t i=0; i<7; ++i) {
+          for (std::size_t i=0; i<MST::NUM_AERO_LOADS; ++i) {
             const Eigen::Vector3d GF = GRb_FLU * bF[i];
             const Eigen::Vector3d GT = GRb_FLU * bT[i];
             const Eigen::Vector3d Gp = Gpb_FLU + GRb_FLU * bp[i];
             const mjtNum force[3]  = {static_cast<mjtNum>(GF(0)), static_cast<mjtNum>(GF(1)), static_cast<mjtNum>(GF(2))};
             const mjtNum torque[3] = {static_cast<mjtNum>(GT(0)), static_cast<mjtNum>(GT(1)), static_cast<mjtNum>(GT(2))};
             const mjtNum point[3]  = {static_cast<mjtNum>(Gp(0)), static_cast<mjtNum>(Gp(1)), static_cast<mjtNum>(Gp(2))};
-            const int target_body_id = i < wing_plate_ids.size() ? wing_plate_ids[i] : body_id;
+            const int target_body_id = i < surface_body_ids.size() ? surface_body_ids[i] : body_id;
             mj_applyFT(m, sim_data, force, torque, point, target_body_id, sim_data->qfrc_applied);
           }
 
@@ -350,22 +328,19 @@ int main(int argc, char** argv) {
             s.acc(1) = static_cast<double>(-sensor_acc[1]);
             s.acc(2) = static_cast<double>(-sensor_acc[2]);
             s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
-            for (std::size_t i=0; i<12; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
+            for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
 
             // Keep qddot-dependent added-mass telemetry synchronized to every log sample.
-            if (snapshot_due || log_due) {
-              mst.update_visualization(s);
-              full_added_time = sample_time;
-            }
+            if (snapshot_due || log_due) {mst.update_visualization(s, cmd.theta_t);}
           }
 
           ++sim_step;
           if (log_due) {
-            for (std::size_t i=0; i<12; ++i) {
+            for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
               servo_torque[i] = servo[i].motor_state.torque;
               damping_torque[i] = -joint_passive_damping[i] * s.theta_dot[i];
             }
-            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, full_added_time, s, cmd, mst, servo_torque, damping_torque);
+            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, s, cmd, mst, servo_torque, damping_torque);
           }
         }
       }
@@ -389,14 +364,14 @@ int main(int argc, char** argv) {
         s.R = quat_to_R(sensor_quat);
         s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
 
-        for (std::size_t i=0; i<12; ++i) {
+        for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
           s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
           s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
           s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);
         }
 
         FK(s.theta, s.bTj);
-        mst.update_visualization(s);
+        mst.update_visualization(s, cmd.theta_t);
       }
 
       // --- Publish a render snapshot at the viewer rate ---
@@ -429,8 +404,8 @@ int main(int argc, char** argv) {
   std::uint64_t handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
   State copied_state{};
   MST::StripState copied_strip_state{};
-  std::array<Eigen::Vector3d, 7> copied_aero_pos{};
-  std::array<Eigen::Vector3d, 7> copied_aero_force{};
+  std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> copied_aero_pos{};
+  std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> copied_aero_force{};
 
   while (!glfwWindowShouldClose(window)) {
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -440,18 +415,22 @@ int main(int argc, char** argv) {
 
     if (mj_utils::g_reset_epoch != handled_viewer_reset_epoch) {
       mj_utils::g_command_theta = param::INITIAL_DES_THETA;
+      mj_utils::g_command_theta_t = 0.0;
       mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);
       handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
     }
 
     ViewerData viewer_data{};
-    for (std::size_t i=0; i<12; ++i) {viewer_data.theta_d[i] = mj_utils::g_command_theta[i];}
+    for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {viewer_data.theta_d[i] = mj_utils::g_command_theta[i];}
+    viewer_data.theta_t = mj_utils::g_command_theta_t;
     viewer_data.perturb = mj_utils::g_perturb;
     viewer_data.paused = mj_utils::g_paused;
     viewer_data.reset_epoch = mj_utils::g_reset_epoch;
     
-    // Drop this viewer-rate publication only if the SPSC queue is temporarily full.
-    (void)viewer_mailbox.push(viewer_data);
+    {
+      std::lock_guard<std::mutex> viewer_lk(viewer_mtx);
+      shared_viewer_data = viewer_data;
+    }
 
     { // Copy data
       std::lock_guard<std::mutex> snapshot_lk(sim_mtx);
@@ -462,7 +441,7 @@ int main(int argc, char** argv) {
       copied_strip_state = shared_sim_data.strip_state;
       copied_aero_pos = shared_sim_data.aero_pos;
       copied_aero_force = shared_sim_data.aero_force;
-      if (elrs_enabled){for(std::size_t i=0; i<12; ++i){mj_utils::g_command_theta[i] = static_cast<mjtNum>(shared_sim_data.theta_d[i]);}}
+      if (elrs_enabled){for(std::size_t i=0; i<param::NUM_JOINTS; ++i){mj_utils::g_command_theta[i] = static_cast<mjtNum>(shared_sim_data.theta_d[i]);}}
     }
     if (elrs_enabled) {mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);}
     mj_forward(m, render_data);
@@ -525,7 +504,35 @@ int main(int argc, char** argv) {
         mj_utils::append_manus_strip_frames(copied_strip_state.p_m, wing*param::NM, GTb, bRmi, manus_rotation.cos_psi[0]);
       }
 
-      for (std::size_t i=0; i<7; ++i) {
+      for (std::size_t section=0; section<2; ++section) {
+        const std::size_t idx0 = section*param::NT;
+        const Eigen::Matrix3d& bRt = copied_strip_state.bR_t[section];
+
+        switch (mj_utils::g_arrow_quantity) {
+          case mj_utils::ARROW_NONE:
+            break;
+
+          case mj_utils::ARROW_A:
+            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.a_t, idx0, GRb, Gpb, bRt, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+            break;
+
+          case mj_utils::ARROW_W:
+            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.w_t[section], idx0, GRb, Gpb, bRt, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+            break;
+
+          case mj_utils::ARROW_WDOT:
+            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.wdot_t[section], idx0, GRb, Gpb, bRt, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+            break;
+
+          case mj_utils::ARROW_V:
+          default:
+            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.v_t, idx0, GRb, Gpb, bRt, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+            break;
+        }
+      }
+      mj_utils::append_tail_strip_frames(copied_strip_state.p_t, copied_strip_state.bR_t, copied_strip_state.theta_t, GTb);
+
+      for (std::size_t i=0; i<MST::NUM_AERO_LOADS; ++i) {
         const Eigen::Vector3d origin = Gpb + GRb*copied_aero_pos[i];
         const Eigen::Vector3d force = GRb*copied_aero_force[i];
         mj_utils::append_arrow(origin, force, mj_utils::AERO_FORCE_ARROW_SCALE, mj_utils::AERO_FORCE_ARROW_WIDTH, mj_utils::AERO_FORCE_ARROW_COLOR);
