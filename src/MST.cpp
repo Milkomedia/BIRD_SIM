@@ -722,7 +722,7 @@ void MST::update_tail_wake_velocity(const State& s) {
 
 
 template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL_POS)[14], const double (&ALPHA_STALL_NEG)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
-void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, const std::size_t idx0, const std::size_t state_idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at, const bool update_telemetry) {
+void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, const std::size_t idx0, const std::size_t state_idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at, const bool update_telemetry, const double helmbold_aspect_ratio) {
   constexpr std::size_t UPPER_SURFACE = 0;
   constexpr std::size_t LOWER_SURFACE = 1;
   constexpr double RAD_TO_DEG = 57.29577951308232;
@@ -840,6 +840,13 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
 
       const double alpha_zero_lift = wagner_airfoil[1][Re_idx] + k_Re*(wagner_airfoil[1][Re_idx+1]-wagner_airfoil[1][Re_idx]);
       wagner_lift_slope = wagner_airfoil[0][Re_idx] + k_Re*(wagner_airfoil[0][Re_idx+1]-wagner_airfoil[0][Re_idx]);
+      if (helmbold_aspect_ratio > 0.0) {
+        // Scale only circulatory lift; drag, pitching moment, and added mass stay unchanged.
+        const double slope_ratio = wagner_lift_slope/(0.5*TWO_PI*helmbold_aspect_ratio);
+        const double helmbold_scale = 1.0/(std::sqrt(1.0+slope_ratio*slope_ratio)+slope_ratio);
+        Cl_lut *= helmbold_scale;
+        wagner_lift_slope *= helmbold_scale;
+      }
 
       const double wagner_alpha_downwash = vz-vx*alpha_zero_lift;
       wagner_input = wagner_alpha_downwash + 0.5*c*omega_y;
@@ -1380,6 +1387,7 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
 
     tail_chord_.fill(param::C_T);
     tail_width_.fill(param::DY_T);
+    double tail_section_area = param::L_T*param::C_T;
     // The side-strip midpoint follows the radial leading edge.  Its chord is the
     // circular trailing-edge intercept minus that leading-edge x coordinate.
     const double side_width = param::C_T*std::abs(sin_theta_t)/static_cast<double>(param::NT_S);
@@ -1389,7 +1397,13 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
       const double radicand = std::max(0.0, 1.0-n*n*sin_theta_t2);
       tail_chord_[param::NT_R+i] = param::C_T*std::max(0.0, std::sqrt(radicand)-n*cos_theta_t);
       tail_width_[param::NT_R+i] = side_width;
+      tail_section_area += tail_chord_[param::NT_R+i]*side_width;
     }
+
+    // Project both the span and planform area through the fixed 15 deg tail cant.
+    constexpr double TAIL_CANT_COS = 0.9659258262890683;
+    const double tail_half_span = param::L_T + param::C_T*std::abs(sin_theta_t);
+    const double tail_aspect_ratio = 2.0*TAIL_CANT_COS*tail_half_span*tail_half_span/tail_section_area;
 
     constexpr std::size_t tail_state_idx0 = 2*(param::NH+param::NR+param::NM);
     if (update_loads && side_width <= 1.0e-12) {
@@ -1442,7 +1456,8 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
           [this, section](const std::size_t) {return strip_state_.wdot_t[section].y();},
           [this](const std::size_t i) {return tail_chord_[i];},
           [this](const std::size_t i) {return tail_width_[i];},
-          update_telemetry
+          update_telemetry,
+          tail_aspect_ratio
         );
       }
     }
