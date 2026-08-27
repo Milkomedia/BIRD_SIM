@@ -21,6 +21,21 @@ void MST::reset() {
   for (Eigen::Matrix<double, 6, 6>& matrix : added_mass_matrix_) {matrix.setZero();}
   tail_chord_.fill(0.0);
   tail_width_.fill(0.0);
+  wing_circulation_.fill(0.0);
+  for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : bound_wake_nodes_) {row.fill(zero);}
+  for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : trailing_edge_wake_nodes_) {row.fill(zero);}
+  for (std::array<double, param::WAKE_SPAN_PANELS>& row : bound_wake_gamma_) {row.fill(0.0);}
+  for (std::array<double, param::WAKE_SPAN_PANELS>& row : wake_gamma_sum_) {row.fill(0.0);}
+  for (auto& wing : wake_nodes_) {
+    for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : wing) {row.fill(zero);}
+  }
+  for (auto& wing : wake_gamma_) {
+    for (std::array<double, param::WAKE_SPAN_PANELS>& row : wing) {row.fill(0.0);}
+  }
+  tail_wake_velocity_world_.fill(zero);
+  wake_valid_cells_ = 0;
+  wake_sample_count_ = 0;
+  wake_initialized_ = false;
   aero_pos_.back() = param::ELLIPSOID_CENTER_POS;
 }
 
@@ -507,6 +522,204 @@ void MST::update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_d
   omega_dot_i = bRsi.transpose() * b_omega_dot_b_theta + omega_b_theta.cross(omega_phi_psi) + omega_dot_phi_psi;
 }
 
+void MST::update_wake_source(const State& s) {
+  static_assert(param::NH == 7 && param::NR == 6 && param::NM == 25, "Wake source map must follow the wing strip layout.");
+  static_assert(param::WAKE_SPAN_PANELS == 12, "Wake source map must contain 12 span panels.");
+
+  constexpr std::array<std::size_t, 8> MANUS_NODE_INDEX{3, 6, 9, 12, 15, 18, 21, 24};
+  const auto humerus_chord = [](const std::size_t i) {return param::C_H0 + param::DL_H*static_cast<double>(i);};
+  const auto radius_chord = [](const std::size_t i) {return param::C_R0 + param::DL_R*static_cast<double>(i);};
+  const auto manus_chord = [](const std::size_t i) {return i < param::DECLINE_IDX_K ? param::C_M0 + param::DL_M1*static_cast<double>(i) : param::C_MK + param::DL_M2*static_cast<double>(i-param::DECLINE_IDX_K);};
+
+  for (std::size_t wing=0; wing<2; ++wing) {
+    const std::size_t h_idx0 = wing*param::NH;
+    const std::size_t r_idx0 = wing*param::NR;
+    const std::size_t m_idx0 = wing*param::NM;
+    const std::size_t h_state_idx0 = wing*param::NH;
+    const std::size_t r_state_idx0 = 2*param::NH + wing*param::NR;
+    const std::size_t m_state_idx0 = 2*(param::NH+param::NR) + wing*param::NM;
+    const Eigen::Matrix3d& bRh = strip_state_.humerus_rotation[wing].bRri[0];
+    const std::array<Eigen::Matrix3d, param::NR>& bRr = strip_state_.radius_rotation[wing].bRri;
+    const Eigen::Matrix3d& bRm = strip_state_.manus_rotation[wing].bRri[0];
+    std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& quarter_chord_nodes = bound_wake_nodes_[wing];
+    std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& trailing_edge_nodes = trailing_edge_wake_nodes_[wing];
+    std::array<double, WAKE_SPAN_NODES> node_gamma{};
+
+    const auto set_node = [&s, &quarter_chord_nodes, &trailing_edge_nodes, &node_gamma](const std::size_t node, const Eigen::Vector3d& leading_edge, const Eigen::Matrix3d& rotation, const double chord, const double gamma) {
+      const Eigen::Vector3d chord_vector = chord*rotation.col(0);
+      quarter_chord_nodes[node] = s.pos + s.R*(leading_edge + 0.25*chord_vector);
+      trailing_edge_nodes[node] = s.pos + s.R*(leading_edge + chord_vector);
+      node_gamma[node] = gamma;
+    };
+    const auto set_joint_node = [&s, &quarter_chord_nodes, &trailing_edge_nodes, &node_gamma](const std::size_t node, const Eigen::Vector3d& leading_edge0, const Eigen::Matrix3d& rotation0, const double chord0, const double gamma0, const Eigen::Vector3d& leading_edge1, const Eigen::Matrix3d& rotation1, const double chord1, const double gamma1) {
+      const Eigen::Vector3d chord_vector0 = chord0*rotation0.col(0);
+      const Eigen::Vector3d chord_vector1 = chord1*rotation1.col(0);
+      const Eigen::Vector3d quarter_chord = 0.5*(leading_edge0 + 0.25*chord_vector0 + leading_edge1 + 0.25*chord_vector1);
+      const Eigen::Vector3d trailing_edge = 0.5*(leading_edge0 + chord_vector0 + leading_edge1 + chord_vector1);
+      quarter_chord_nodes[node] = s.pos + s.R*quarter_chord;
+      trailing_edge_nodes[node] = s.pos + s.R*trailing_edge;
+      node_gamma[node] = 0.5*(gamma0+gamma1);
+    };
+
+    set_node(0, strip_state_.p_h[h_idx0], bRh, humerus_chord(0), wing_circulation_[h_state_idx0]);
+    set_node(1, strip_state_.p_h[h_idx0+3], bRh, humerus_chord(3), wing_circulation_[h_state_idx0+3]);
+    set_joint_node(2, strip_state_.p_h[h_idx0+6], bRh, humerus_chord(6), wing_circulation_[h_state_idx0+6], strip_state_.p_r[r_idx0], bRr[0], radius_chord(0), wing_circulation_[r_state_idx0]);
+    set_node(3, strip_state_.p_r[r_idx0+3], bRr[3], radius_chord(3), wing_circulation_[r_state_idx0+3]);
+    set_joint_node(4, strip_state_.p_r[r_idx0+5], bRr[5], radius_chord(5), wing_circulation_[r_state_idx0+5], strip_state_.p_m[m_idx0], bRm, manus_chord(0), wing_circulation_[m_state_idx0]);
+    for (std::size_t i=0; i<MANUS_NODE_INDEX.size(); ++i) {
+      const std::size_t strip = MANUS_NODE_INDEX[i];
+      set_node(5+i, strip_state_.p_m[m_idx0+strip], bRm, manus_chord(strip), wing_circulation_[m_state_idx0+strip]);
+    }
+
+    const double orientation = param::STRIP_SPAN_SIGN[wing];
+    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
+      bound_wake_gamma_[wing][panel] = 0.5*orientation*(node_gamma[panel]+node_gamma[panel+1]);
+    }
+  }
+}
+
+bool MST::update_wake(const State& s) {
+  static_assert(param::WAKE_UPDATE_DECIMATION > 0, "Wake update decimation must be positive.");
+  static_assert(param::WAKE_AGE_CELLS > 0, "Wake history must contain at least one age cell.");
+
+  update_wake_source(s);
+  if (!wake_initialized_) {
+    for (std::size_t wing=0; wing<2; ++wing) {wake_nodes_[wing][0] = trailing_edge_wake_nodes_[wing];}
+    wake_initialized_ = true;
+    return true;
+  }
+
+  for (std::size_t wing=0; wing<2; ++wing) {
+    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
+      wake_gamma_sum_[wing][panel] += bound_wake_gamma_[wing][panel];
+    }
+  }
+  ++wake_sample_count_;
+  if (wake_sample_count_ < param::WAKE_UPDATE_DECIMATION) {return false;}
+
+  constexpr double WAKE_DT = static_cast<double>(param::WAKE_UPDATE_DECIMATION)*param::SIM_DT_SEC;
+  const Eigen::Vector3d convection = WAKE_DT*s.vel_f;
+  const std::size_t new_valid_cells = std::min(wake_valid_cells_+1, param::WAKE_AGE_CELLS);
+  const double inv_sample_count = 1.0/static_cast<double>(wake_sample_count_);
+
+  for (std::size_t wing=0; wing<2; ++wing) {
+    for (std::size_t age=new_valid_cells; age>0; --age) {
+      for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
+        wake_nodes_[wing][age][node] = wake_nodes_[wing][age-1][node] + convection;
+      }
+    }
+    wake_nodes_[wing][0] = trailing_edge_wake_nodes_[wing];
+
+    for (std::size_t age=new_valid_cells-1; age>0; --age) {wake_gamma_[wing][age] = wake_gamma_[wing][age-1];}
+    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
+      wake_gamma_[wing][0][panel] = inv_sample_count*wake_gamma_sum_[wing][panel];
+      wake_gamma_sum_[wing][panel] = 0.0;
+    }
+  }
+
+  wake_valid_cells_ = new_valid_cells;
+  wake_sample_count_ = 0;
+  return true;
+}
+
+void MST::update_tail_wake_velocity(const State& s) {
+  constexpr double INV_FOUR_PI = 0.07957747154594767;
+  constexpr double EPS2 = 1.0e-16;
+  constexpr double MIN_ACTIVE_AREA = 1.0e-12;
+  constexpr double CORE_RADIUS2 = param::WAKE_CORE_RADIUS*param::WAKE_CORE_RADIUS;
+  constexpr double WAKE_DT = static_cast<double>(param::WAKE_UPDATE_DECIMATION)*param::SIM_DT_SEC;
+  constexpr double CORE_GROWTH_PER_CELL = 4.0*param::AIR_KINEMATIC_VISCOSITY*WAKE_DT;
+  std::array<Eigen::Vector3d, 2*param::NT> query_world{};
+  std::array<std::size_t, 2*param::NT> active_tail_index{};
+  std::size_t num_active_tail_strips = 0;
+
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+  tail_wake_velocity_world_.fill(zero);
+
+  for (std::size_t section=0; section<2; ++section) {
+    const Eigen::Matrix3d& bRt = strip_state_.bR_t[section];
+    for (std::size_t i=0; i<param::NT; ++i) {
+      const std::size_t tail_idx = section*param::NT+i;
+      if (tail_chord_[i]*tail_width_[i] <= MIN_ACTIVE_AREA) {continue;}
+      const Eigen::Vector3d query_body = strip_state_.p_t[tail_idx] + 0.25*tail_chord_[i]*bRt.col(0);
+      query_world[tail_idx] = s.pos + s.R*query_body;
+      active_tail_index[num_active_tail_strips++] = tail_idx;
+    }
+  }
+
+  // Segment geometry is shared by every tail query and evaluated only once.
+  const auto add_segment = [&query_world, &active_tail_index, &num_active_tail_strips, this](const Eigen::Vector3d& node_a, const Eigen::Vector3d& node_b, const double gamma, const double core_radius2) {
+    if (std::abs(gamma) <= 1.0e-12) {return;}
+    const Eigen::Vector3d segment = node_b-node_a;
+    const double segment2 = segment.squaredNorm();
+    if (segment2 <= EPS2) {return;}
+    const double scale = gamma*INV_FOUR_PI;
+
+    for (std::size_t i=0; i<num_active_tail_strips; ++i) {
+      const std::size_t tail_idx = active_tail_index[i];
+      const Eigen::Vector3d r1 = query_world[tail_idx]-node_a;
+      const Eigen::Vector3d r2 = query_world[tail_idx]-node_b;
+      const double r1_squared = r1.squaredNorm();
+      const double r2_squared = r2.squaredNorm();
+      if (r1_squared <= EPS2 || r2_squared <= EPS2) {continue;}
+
+      const Eigen::Vector3d cross = r1.cross(r2);
+      const double denominator = cross.squaredNorm() + core_radius2*segment2;
+      if (denominator <= EPS2) {continue;}
+
+      const double finite_segment = segment.dot(r1/std::sqrt(r1_squared) - r2/std::sqrt(r2_squared));
+      tail_wake_velocity_world_[tail_idx] += scale*finite_segment/denominator*cross;
+    }
+  };
+
+  for (std::size_t wing=0; wing<2; ++wing) {
+    const std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& bound_nodes = bound_wake_nodes_[wing];
+    const std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& trailing_edge_nodes = trailing_edge_wake_nodes_[wing];
+    const std::array<double, param::WAKE_SPAN_PANELS>& bound_gamma = bound_wake_gamma_[wing];
+
+    // Current bound lattice: quarter-chord, chordwise closure, and trailing edge.
+    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
+      add_segment(bound_nodes[panel], bound_nodes[panel+1], bound_gamma[panel], CORE_RADIUS2);
+      add_segment(trailing_edge_nodes[panel], trailing_edge_nodes[panel+1], -bound_gamma[panel], CORE_RADIUS2);
+    }
+    for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
+      double gamma;
+      if (node == 0) {gamma = -bound_gamma[0];}
+      else if (node == param::WAKE_SPAN_PANELS) {gamma = bound_gamma.back();}
+      else {gamma = bound_gamma[node-1]-bound_gamma[node];}
+      add_segment(bound_nodes[node], trailing_edge_nodes[node], gamma, CORE_RADIUS2);
+    }
+
+    if (wake_valid_cells_ == 0) {continue;}
+    const auto& wing_nodes = wake_nodes_[wing];
+    const auto& wing_gamma = wake_gamma_[wing];
+
+    // Spanwise edges shared by adjacent wake-age cells are evaluated once.
+    for (std::size_t age=0; age<=wake_valid_cells_; ++age) {
+      const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*static_cast<double>(age);
+      for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
+        double gamma;
+        if (age == 0) {gamma = wing_gamma[0][panel];}
+        else if (age == wake_valid_cells_) {gamma = -wing_gamma[age-1][panel];}
+        else {gamma = wing_gamma[age][panel]-wing_gamma[age-1][panel];}
+        add_segment(wing_nodes[age][panel], wing_nodes[age][panel+1], gamma, core_radius2);
+      }
+    }
+
+    // Streamwise edges retain only the net circulation of adjacent span panels.
+    for (std::size_t age=0; age<wake_valid_cells_; ++age) {
+      const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*(static_cast<double>(age)+0.5);
+      for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
+        double gamma;
+        if (node == 0) {gamma = -wing_gamma[age][0];}
+        else if (node == param::WAKE_SPAN_PANELS) {gamma = wing_gamma[age].back();}
+        else {gamma = wing_gamma[age][node-1]-wing_gamma[age][node];}
+        add_segment(wing_nodes[age][node], wing_nodes[age+1][node], gamma, core_radius2);
+      }
+    }
+  }
+}
+
 
 template <const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL_POS)[14], const double (&ALPHA_STALL_NEG)[14], std::size_t N, typename RotationAt, typename OmegaAt, typename OmegaDotYAt, typename ChordAt, typename WidthAt>
 void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p, const std::array<Eigen::Vector3d, 2*N>& v, const std::array<Eigen::Vector3d, 2*N>& a, const std::size_t idx0, const std::size_t state_idx0, const std::size_t load_idx, RotationAt&& rotation_at, OmegaAt&& omega_at, OmegaDotYAt&& omega_dot_y_at, ChordAt&& chord_at, WidthAt&& width_at, const bool update_telemetry) {
@@ -767,6 +980,11 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
       }
     }
 
+    if (state_idx < NUM_WING_STRIPS) {
+      // Kutta-Joukowski-equivalent circulation from the circulatory lift only.
+      wing_circulation_[state_idx] = 0.5*U*c*(Cl_dynamic+Cl_wagner);
+    }
+
     // a and omega_dot contain only qdot-dependent bias in update_dynamics().
     // The qddot-dependent part is represented by MuJoCo's generalized mass matrix.
     const double omega_dot_y = omega_dot_y_at(i);
@@ -924,6 +1142,7 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
   const Eigen::Matrix3d Rt = s.R.transpose();
   const Eigen::Vector3d RtVrel = Rt * (s.vel_f - s.vel);
   const Eigen::Vector3d RtArel = -(Rt * body_acc); // Steady freestream: acc_f = 0.
+  bool wake_output_due = false;
 
   for (std::size_t wing=0; wing<2; ++wing) { // wing=0 : right wing, wing=1 : left wing
     const std::size_t j0 = param::NUM_WING_JOINTS_PER_WING*wing;
@@ -1126,6 +1345,8 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
     }
   }
 
+  if (update_loads) {wake_output_due = update_wake(s);}
+
   { // Tail kinematics
     Eigen::Vector3d b_omega_b_theta = s.w;
     Eigen::Vector3d b_omega_dot_b_theta = body_w_dot;
@@ -1188,8 +1409,30 @@ void MST::update(const State& s, const double theta_t, const bool acceleration_b
       const Eigen::Vector3d bpt0 = bpj_prev + bRj*jTt0.block<3, 1>(0, 3);
       update_tail_section_p_v_a(section, bRt, bpt0, bpj_prev, bvj_prev, baj_prev, RtVrel, RtArel, b_omega_b_theta, b_omega_dot_b_theta, sin_theta_t, cos_theta_t);
       update_strip_w_wdot(strip_state_.w_t[section], strip_state_.wdot_t[section], bRt, b_omega_b_theta, b_omega_dot_b_theta, zero, zero);
+    }
 
-      if (update_loads) {
+    if (update_loads && wake_output_due) {update_tail_wake_velocity(s);}
+    for (std::size_t section=0; section<2; ++section) {
+      const Eigen::Matrix3d& bRt = strip_state_.bR_t[section];
+      for (std::size_t i=0; i<param::NT; ++i) {
+        const std::size_t idx = section*param::NT+i;
+        const Eigen::Vector3d wake_velocity = bRt.transpose()*Rt*tail_wake_velocity_world_[idx];
+        if (update_telemetry) {
+          const double vx_without_wake = strip_state_.v_t[idx].x();
+          const double vz_without_wake = strip_state_.v_t[idx].z()+0.25*tail_chord_[i]*strip_state_.w_t[section].y();
+          const double speed_without_wake = std::sqrt(vx_without_wake*vx_without_wake + vz_without_wake*vz_without_wake);
+          const double vx_with_wake = vx_without_wake+wake_velocity.x();
+          const double vz_with_wake = vz_without_wake+wake_velocity.z();
+          const double speed_with_wake = std::sqrt(vx_with_wake*vx_with_wake + vz_with_wake*vz_with_wake);
+          aero_telemetry_.tail_wake_delta_speed[idx] = tail_chord_[i]*tail_width_[i] > 1.0e-12 ? speed_with_wake-speed_without_wake : 0.0;
+        }
+        strip_state_.v_t[idx] += wake_velocity;
+      }
+    }
+
+    if (update_loads) {
+      for (std::size_t section=0; section<2; ++section) {
+        const Eigen::Matrix3d& bRt = strip_state_.bR_t[section];
         // Keep the LUT two-dimensional like the wing solver; c*dy carries the
         // changing exposed planform area without a per-strip aspect-ratio term.
         update_segment_aerodynamics<param::coeff::FLAT_CD, param::coeff::FLAT_CL, param::coeff::FLAT_CM, param::coeff::FLAT_GK_X0, param::coeff::FLAT_GK_ALPHA_STALL, param::coeff::FLAT_GK_ALPHA_STALL_NEG, param::NT>(

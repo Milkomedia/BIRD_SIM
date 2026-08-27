@@ -28,6 +28,12 @@ namespace param {
   inline constexpr double AIR_DENSITY = 1.225;               // [kg/m^3]
   inline constexpr double AIR_KINEMATIC_VISCOSITY = 1.5e-5;  // [m^2/s]
 
+  // ----- wing wake to tail -----
+  inline constexpr std::size_t WAKE_UPDATE_DECIMATION = 10; // 500 Hz at the current simulation rate
+  inline constexpr std::size_t WAKE_SPAN_PANELS = 12;       // 2 humerus + 2 radius + 8 manus
+  inline constexpr std::size_t WAKE_AGE_CELLS = 32;         // 64 ms prescribed-wake history
+  inline constexpr double WAKE_CORE_RADIUS = 0.010;         // [m], initial Scully vortex-core radius
+
   // ----- wing kinematics -----
   inline constexpr double KIN_GAIN = 2.2;
 

@@ -396,6 +396,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.replay_time = np.empty((0,), np.float64)
     self.replay_channels: Dict[str, np.ndarray] = {}
     self.curves: Dict[str, pg.PlotDataItem] = {}
+    self.flow_speed_legend = None
+    self.flow_speed_comparison_visible = False
     self.load_plots: Dict[Tuple[str, int], pg.PlotItem] = {}
     self.aggregate_plots: Dict[Tuple[str, int], pg.PlotItem] = {}
     self.strip_wing = 0
@@ -572,7 +574,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
       plot = self._plot(graphics, index//3, index%3, title, unit, True, index//3 == 1)
       if name == "alpha": plot.setYRange(-30.0, 80.0, padding=0.0)
       elif name == "Re": plot.setYRange(0.0, 3.0, padding=0.0)
-      if name == "stall":
+      if name == "speed":
+        self.flow_speed_legend = plot.legend
+        self.curves["flow.speed"] = plot.plot(pen=pg.mkPen(blue, width=2), name=paper_text("<i>U</i>", 10))
+        self.curves["flow.speed_no_wake"] = plot.plot(pen=pg.mkPen((150, 150, 150), width=1.5, style=QtCore.Qt.DashLine))
+        self.curves["flow.speed_no_wake"].setVisible(False)
+      elif name == "stall":
         self.curves["flow.X"] = plot.plot(pen=pg.mkPen(blue, width=2), name=paper_text("<i>X</i>", 10))
         self.curves["flow.X_eq"] = plot.plot(pen=pg.mkPen((230, 160, 160), width=1.5), name=paper_text("<i>X</i><sub>eq</sub>", 10))
         self.curves["flow.X_target"] = plot.plot(pen=pg.mkPen((145, 205, 170), width=1.5), name=paper_text("<i>X</i><sub>t</sub>", 10))
@@ -710,6 +717,23 @@ class MonitorWindow(QtWidgets.QMainWindow):
   def _set_curve(self, name: str, time: np.ndarray, values: np.ndarray) -> None:
     self.curves[name].setData(time, values)
 
+  def _set_speed_comparison_visible(self, visible: bool) -> None:
+    if visible == self.flow_speed_comparison_visible: return
+    curve = self.curves["flow.speed_no_wake"]
+    total_curve = self.curves["flow.speed"]
+    if visible:
+      self.flow_speed_legend.removeItem(total_curve)
+      self.flow_speed_legend.addItem(total_curve, paper_text("<i>U</i><sub>total</sub>", 10))
+      curve.setVisible(True)
+      self.flow_speed_legend.addItem(curve, paper_text("<i>U</i><sub>no wake</sub>", 10))
+    else:
+      self.flow_speed_legend.removeItem(curve)
+      self.flow_speed_legend.removeItem(total_curve)
+      self.flow_speed_legend.addItem(total_curve, paper_text("<i>U</i>", 10))
+      curve.setVisible(False)
+      curve.setData([], [])
+    self.flow_speed_comparison_visible = visible
+
   def _update_flight(self) -> None:
     names = ("state.pos", "state.vel", "state.R", "state.w", "cmd.pos", "cmd.vel", "cmd.R", "cmd.w", "segment.force", "body.ellipsoid_force")
     time, channels = self._data(names)
@@ -750,15 +774,23 @@ class MonitorWindow(QtWidgets.QMainWindow):
   def _update_strip_flow(self) -> None:
     flow_names = ["alpha", "alpha_dot", "speed", "Re", "X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"]
     has_wagner = "strip.Cl_wagner" in self.channel_names
+    has_tail_wake_delta_speed = "tail.wake_delta_speed" in self.channel_names
     if has_wagner: flow_names.append("Cl_wagner")
-    names = tuple(f"strip.{name}" for name in flow_names)
-    time, channels = self._data(names)
+    names = [f"strip.{name}" for name in flow_names]
+    if has_tail_wake_delta_speed: names.append("tail.wake_delta_speed")
+    show_wake_comparison = self.strip_segment == 3 and has_tail_wake_delta_speed
+    self._set_speed_comparison_visible(show_wake_comparison)
+    time, channels = self._data(tuple(names))
     time, channels = self._view(time, channels)
     if time.size == 0: return
     index = self._strip_index()
     self._set_curve("flow.alpha", time, channels["strip.alpha"][:, index]*RAD2DEG)
     self._set_curve("flow.alpha_dot", time, channels["strip.alpha_dot"][:, index]*RAD2DEG)
-    self._set_curve("flow.speed", time, channels["strip.speed"][:, index])
+    speed = channels["strip.speed"][:, index]
+    self._set_curve("flow.speed", time, speed)
+    if show_wake_comparison:
+      tail_index = self.strip_wing*self.header.nt+self.strip_local
+      self._set_curve("flow.speed_no_wake", time, speed-channels["tail.wake_delta_speed"][:, tail_index])
     self._set_curve("flow.Re", time, channels["strip.Re"][:, index]*1.0e-5)
     for name in ("X", "X_eq", "X_target", "stall_active", "Cd", "Cl_lut", "Cl_dynamic", "Cm"):
       self._set_curve(f"flow.{name}", time, channels[f"strip.{name}"][:, index])

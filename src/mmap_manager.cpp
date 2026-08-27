@@ -53,6 +53,7 @@ static_assert(NUM_STRIPS == MST::NUM_STRIPS, "MST and mmap strip counts differ."
   X("strip.alpha",                  "rad",     "strip",     offsetof(SampleData, strip_alpha),                 NUM_STRIPS, 1) \
   X("strip.alpha_dot",              "rad/s",   "strip",     offsetof(SampleData, strip_alpha_dot),             NUM_STRIPS, 1) \
   X("strip.speed",                  "m/s",     "strip",     offsetof(SampleData, strip_speed),                 NUM_STRIPS, 1) \
+  X("tail.wake_delta_speed",        "m/s",     "tail strip", offsetof(SampleData, tail_wake_delta_speed),      NUM_TAIL_STRIPS, 1) \
   X("strip.Re",                     "1",       "strip",     offsetof(SampleData, strip_Re),                    NUM_STRIPS, 1) \
   X("strip.Cd",                     "1",       "strip",     offsetof(SampleData, strip_Cd),                    NUM_STRIPS, 1) \
   X("strip.Cl_lut",                 "1",       "strip",     offsetof(SampleData, strip_Cl_lut),                NUM_STRIPS, 1) \
@@ -258,6 +259,7 @@ void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch
   copy_scalar(data.strip_alpha, aero.alpha);
   copy_scalar(data.strip_alpha_dot, aero.alpha_dot);
   copy_scalar(data.strip_speed, aero.speed);
+  copy_scalar(data.tail_wake_delta_speed, aero.tail_wake_delta_speed);
   copy_scalar(data.strip_Re, aero.Re);
   copy_scalar(data.strip_Cd, aero.Cd);
   copy_scalar(data.strip_Cl_lut, aero.Cl_lut);

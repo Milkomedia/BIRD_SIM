@@ -20,6 +20,7 @@ inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
 inline constexpr std::size_t NUM_JOINTS = param::NUM_JOINTS;
 inline constexpr std::size_t NUM_SEGMENTS = 8;
 inline constexpr std::size_t NUM_STRIPS = 2*(param::NH + param::NR + param::NM + param::NT);
+inline constexpr std::size_t NUM_TAIL_STRIPS = 2*param::NT;
 inline constexpr std::size_t LOG_DECIMATION = static_cast<std::size_t>(1.0 / (param::SIM_DT_SEC * static_cast<double>(LOG_HZ)) + 0.5);
 
 static_assert(LOG_DECIMATION > 0, "Invalid mmap logging decimation.");
@@ -57,6 +58,7 @@ struct SampleData {
   float strip_alpha[NUM_STRIPS]{};
   float strip_alpha_dot[NUM_STRIPS]{};
   float strip_speed[NUM_STRIPS]{};
+  float tail_wake_delta_speed[NUM_TAIL_STRIPS]{};
   float strip_Re[NUM_STRIPS]{};
   float strip_Cd[NUM_STRIPS]{};
   float strip_Cl_lut[NUM_STRIPS]{};

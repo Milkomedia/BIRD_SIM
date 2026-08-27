@@ -93,6 +93,7 @@ public:
     std::array<double, NUM_STRIPS> alpha{};
     std::array<double, NUM_STRIPS> alpha_dot{};
     std::array<double, NUM_STRIPS> speed{};
+    std::array<double, 2*param::NT> tail_wake_delta_speed{};
     std::array<double, NUM_STRIPS> Re{};
     std::array<double, NUM_STRIPS> Cd{};
     std::array<double, NUM_STRIPS> Cl_lut{};
@@ -121,6 +122,7 @@ public:
     void reset() {
       const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
       alpha.fill(0.0); alpha_dot.fill(0.0); speed.fill(0.0); Re.fill(0.0);
+      tail_wake_delta_speed.fill(0.0);
       Cd.fill(0.0); Cl_lut.fill(0.0); Cl_dynamic.fill(0.0); Cl_wagner.fill(0.0); Cm.fill(0.0);
       wagner_input.fill(0.0); wagner_z1.fill(0.0); wagner_z2.fill(0.0); wagner_output.fill(0.0);
       X_eq.fill(1.0); X.fill(1.0); X_target.fill(1.0);
@@ -146,6 +148,10 @@ public:
   const AeroTelemetry& aero_telemetry() const noexcept {return aero_telemetry_;}
 
 private:
+  static constexpr std::size_t NUM_WING_STRIPS = 2*(param::NH + param::NR + param::NM);
+  static constexpr std::size_t WAKE_SPAN_NODES = param::WAKE_SPAN_PANELS+1;
+  static constexpr std::size_t WAKE_AGE_NODES = param::WAKE_AGE_CELLS+1;
+
   struct DynamicStallState {
     std::array<double, 2> X{1.0, 1.0};
     std::array<double, 2> X_eq{1.0, 1.0};
@@ -166,14 +172,28 @@ private:
   std::array<Eigen::Vector3d, NUM_AERO_LOADS> aero_pos_{};    // [m], body FRD
   std::array<Eigen::Vector3d, NUM_AERO_LOADS> aero_force_{};  // [N], body FRD
   std::array<Eigen::Vector3d, NUM_AERO_LOADS> aero_torque_{}; // [N.m], body FRD
-  std::array<Eigen::Vector3d, NUM_SURFACE_LOADS> added_mass_pos_{};                    // Reference points, body FRD [m]
-  std::array<Eigen::Matrix<double, 6, 6>, NUM_SURFACE_LOADS> added_mass_matrix_{};     // At reference points, body FRD
+  std::array<Eigen::Vector3d, NUM_SURFACE_LOADS> added_mass_pos_{}; // Reference points, body FRD [m]
+  std::array<Eigen::Matrix<double, 6, 6>, NUM_SURFACE_LOADS> added_mass_matrix_{}; // At reference points, body FRD
   std::array<double, param::NT> tail_chord_{}; // Shared by the right and left tail sections [m]
   std::array<double, param::NT> tail_width_{}; // Exposed strip width [m]
+  std::array<double, NUM_WING_STRIPS> wing_circulation_{}; // Effective bound circulation [m^2/s]
+  std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, 2> bound_wake_nodes_{}; // Current quarter-chord nodes, world NED
+  std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, 2> trailing_edge_wake_nodes_{}; // Current trailing-edge nodes, world NED
+  std::array<std::array<double, param::WAKE_SPAN_PANELS>, 2> bound_wake_gamma_{};
+  std::array<std::array<double, param::WAKE_SPAN_PANELS>, 2> wake_gamma_sum_{};
+  std::array<std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, WAKE_AGE_NODES>, 2> wake_nodes_{};
+  std::array<std::array<std::array<double, param::WAKE_SPAN_PANELS>, param::WAKE_AGE_CELLS>, 2> wake_gamma_{};
+  std::array<Eigen::Vector3d, 2*param::NT> tail_wake_velocity_world_{};
+  std::size_t wake_valid_cells_ = 0;
+  std::size_t wake_sample_count_ = 0;
+  bool wake_initialized_ = false;
 
   void update(const State& s, double theta_t, bool acceleration_bias_only, bool update_loads, bool update_telemetry);
   void update_body_elipsoid(const State& s);
   void update_full_added_mass_telemetry();
+  void update_wake_source(const State& s);
+  bool update_wake(const State& s);
+  void update_tail_wake_velocity(const State& s);
 
   void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot);
   void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x);
