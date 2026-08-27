@@ -31,6 +31,8 @@ namespace mj_utils {
   inline std::array<int, param::NUM_JOINTS> g_joint_qpos_adrs{};
   inline std::array<mjtNum, param::NUM_JOINTS> g_command_theta{};
   inline mjtNum g_command_theta_t = 0.0;
+  inline mjtNum g_sim_speed = 1.0;
+  inline mjtNum g_resume_sim_speed = 1.0;
 
   inline bool g_left_pressed = false;
   inline bool g_middle_pressed = false;
@@ -48,14 +50,22 @@ namespace mj_utils {
   inline constexpr double STRIP_PLATE_THICKNESS = 0.001; // [m]
 
   enum ArrowQuantity : int {
-    ARROW_NONE = 0,
-    ARROW_V,
+    ARROW_V = 0,
     ARROW_A,
     ARROW_W,
     ARROW_WDOT
   };
 
   inline int g_arrow_quantity = ARROW_V;
+
+  enum ArrowView : int {
+    ARROW_VIEW_NONE = 0,
+    ARROW_VIEW_WING,
+    ARROW_VIEW_TAIL,
+    ARROW_VIEW_BOTH
+  };
+
+  inline int g_arrow_view = ARROW_VIEW_BOTH;
 
   inline constexpr double V_ARROW_SCALE = 0.25;        // [s]
   inline constexpr double A_ARROW_SCALE = 0.01;        // [s^2]
@@ -108,12 +118,32 @@ namespace mj_utils {
     g_ui_state.mouserect = mjr_findRect(mju_round(x), mju_round(y), g_ui_state.nrect - 1, g_ui_state.rect + 1) + 1;
   }
 
+  inline void sync_pause_from_sim_speed() {
+    g_sim_speed = std::clamp(g_sim_speed, static_cast<mjtNum>(0.0), static_cast<mjtNum>(1.0));
+    g_paused = g_sim_speed <= static_cast<mjtNum>(0.0);
+    if (!g_paused) {g_resume_sim_speed = g_sim_speed;}
+  }
+
+  inline void toggle_pause() {
+    if (g_paused) {
+      g_sim_speed = std::clamp(g_resume_sim_speed, static_cast<mjtNum>(0.0), static_cast<mjtNum>(1.0));
+      if (g_sim_speed <= static_cast<mjtNum>(0.0)) {g_sim_speed = static_cast<mjtNum>(1.0);}
+      g_paused = false;
+    }
+    else {
+      if (g_sim_speed > static_cast<mjtNum>(0.0)) {g_resume_sim_speed = g_sim_speed;}
+      g_sim_speed = static_cast<mjtNum>(0.0);
+      g_paused = true;
+    }
+  }
+
   inline bool process_ui_event() {
     const bool targets_ui =
       g_ui_state.dragrect == g_ui.rectid || (g_ui_state.dragrect == 0 && g_ui_state.mouserect == g_ui.rectid) || g_ui_state.type == mjEVENT_KEY;
     if (!targets_ui) {return false;}
 
     mjuiItem* changed = mjui_event(&g_ui, &g_ui_state, &g_context);
+    if (changed && changed->pdata == &g_sim_speed) {sync_pause_from_sim_speed();}
     return changed != nullptr || g_ui_state.mouserect == g_ui.rectid || g_ui_state.dragrect == g_ui.rectid || (g_ui_state.type == mjEVENT_KEY && g_ui_state.key == 0);
   }
 
@@ -129,7 +159,8 @@ namespace mj_utils {
       return;
     }
     else if (key == GLFW_KEY_SPACE) {
-      g_paused = !g_paused;
+      toggle_pause();
+      mjui_update(-1, -1, &g_ui, &g_ui_state, &g_context);
       return;
     }
     else if (key == GLFW_KEY_BACKSPACE) {
@@ -508,7 +539,9 @@ namespace mj_utils {
     g_ui.auxid = 0;
 
     const mjuiDef definitions[] = {
-      {mjITEM_SECTION, "theta[rad]", 1, nullptr, ""},
+      {mjITEM_SECTION, "simulation", 1, nullptr, ""},
+      {mjITEM_SLIDERNUM, "spd", 2, &g_sim_speed, "0 1"},
+      {mjITEM_SECTION, "joint control", 1, nullptr, ""},
       {mjITEM_SLIDERNUM, "J1",  2, &g_command_theta[0], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "J2",  2, &g_command_theta[1], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "J3",  2, &g_command_theta[2], "-1.5707963268 3.1415926536"},
@@ -526,7 +559,9 @@ namespace mj_utils {
       {mjITEM_SLIDERNUM, "J13", 2, &g_command_theta[param::NUM_WING_JOINTS], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "J14", 2, &g_command_theta[param::NUM_WING_JOINTS+1], "-1.5707963268 1.5707963268"},
       {mjITEM_SLIDERNUM, "theta_t", 2, &g_command_theta_t, "0 1.5707963268"},
-      {mjITEM_SELECT, "arrow", 2, &g_arrow_quantity, "none\nv [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
+      {mjITEM_SECTION, "view control", 1, nullptr, ""},
+      {mjITEM_SELECT, "tgt", 2, &g_arrow_view, "none\nwing\ntail\nboth"},
+      {mjITEM_SELECT, "type", 2, &g_arrow_quantity, "v [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
       {mjITEM_END}
     };
     mjui_add(&g_ui, definitions);
@@ -537,8 +572,20 @@ namespace mj_utils {
     mjui_update(-1, -1, &g_ui, &g_ui_state, &g_context);
   }
 
+  inline void update_sim_speed_slider_color() {
+    const std::array<float, 3> original_slider2 = {
+      g_ui.color.slider2[0],
+      g_ui.color.slider2[1],
+      g_ui.color.slider2[2]
+    };
+
+    set_rgb(g_ui.color.slider2, 0.20f, 0.75f, 0.38f);
+    mjui_update(0, 0, &g_ui, &g_ui_state, &g_context);
+    std::copy(original_slider2.begin(), original_slider2.end(), g_ui.color.slider2);
+  }
+
   inline void render_joint_current_overlay() {
-    if (!g_model || !g_data || g_ui.nsect < 1) {return;}
+    if (!g_model || !g_data || g_ui.nsect < 2) {return;}
     constexpr std::array<int, param::NUM_JOINTS> kSliderItemIndices = []() {
       std::array<int, param::NUM_JOINTS> result{};
       for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {result[i] = static_cast<int>(i + i/param::NUM_WING_JOINTS_PER_WING);}
@@ -552,7 +599,7 @@ namespace mj_utils {
     constexpr float marker_a = 0.45f;
 
     const mjrRect ui_viewport = g_ui_state.rect[g_ui.rectid];
-    const mjuiSection& section = g_ui.sect[0];
+    const mjuiSection& section = g_ui.sect[1];
 
     // Convert UI-local y coordinates to framebuffer coordinates.
     const int ui_bottom = ui_viewport.bottom + ui_viewport.height - g_ui.height + (g_ui.height > ui_viewport.height ? g_ui.scroll : 0);
@@ -596,6 +643,7 @@ namespace mj_utils {
 
   inline void render_ui(GLFWwindow* window) {
     layout_ui(window);
+    update_sim_speed_slider_color();
     mjui_render(&g_ui, &g_ui_state, &g_context);
     render_joint_current_overlay();
   }

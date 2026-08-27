@@ -38,6 +38,7 @@ struct Command {
 struct ViewerData {
   std::array<mjtNum, param::NUM_JOINTS> theta_d{};
   mjtNum theta_t = 0.0;
+  mjtNum sim_speed = 1.0; // [0, 1], simulation time / wall time
   mjvPerturb perturb{};
   bool paused = false;
   std::uint64_t reset_epoch = 0;

@@ -76,6 +76,7 @@ int main(int argc, char** argv) {
   ViewerData initial_viewer_data{};
   initial_viewer_data.theta_d = mj_utils::g_command_theta;
   initial_viewer_data.theta_t = mj_utils::g_command_theta_t;
+  initial_viewer_data.sim_speed = mj_utils::g_sim_speed;
   initial_viewer_data.perturb = mj_utils::g_perturb;
   initial_viewer_data.paused = mj_utils::g_paused;
   initial_viewer_data.reset_epoch = mj_utils::g_reset_epoch;
@@ -149,6 +150,7 @@ int main(int argc, char** argv) {
     mjtNum snapshot_time = sim_data->time;
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::uint64_t sim_step = 0;
+    double sim_step_credit = 0.0;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -176,13 +178,25 @@ int main(int argc, char** argv) {
         servo_torque.fill(0.0);
         damping_torque.fill(0.0);
         sim_step = 0;
+        sim_step_credit = 0.0;
         handled_reset_epoch = viewer_data.reset_epoch;
       }
+
+      // Keep MuJoCo's fixed timestep and scale only how often a step runs in wall time.
+      bool advance_sim = false;
+      if (!reset_requested && !viewer_data.paused) {
+        sim_step_credit += std::clamp(static_cast<double>(viewer_data.sim_speed), 0.0, 1.0);
+        if (sim_step_credit >= 1.0-1.0e-12) {
+          sim_step_credit = std::max(0.0, sim_step_credit-1.0);
+          advance_sim = true;
+        }
+      }
+      else if (viewer_data.paused) {sim_step_credit = 0.0;}
 
       snapshot_elapsed += param::SIM_DT_US;
       const bool snapshot_due = reset_requested || snapshot_elapsed >= param::RENDER_DT_US;
       if (snapshot_due) {snapshot_elapsed = reset_requested ? std::chrono::steady_clock::duration::zero() : snapshot_elapsed - param::RENDER_DT_US;}
-       const bool log_due = !reset_requested && !viewer_data.paused && (sim_step + 1) % bird_mmap::LOG_DECIMATION == 0;
+      const bool log_due = advance_sim && (sim_step + 1) % bird_mmap::LOG_DECIMATION == 0;
 
       // --- ELRS RC command ---
       if (elrs_enabled) {
@@ -256,7 +270,7 @@ int main(int argc, char** argv) {
         mju_zero(sim_data->qfrc_applied, m->nv);
         mjv_applyPerturbPose(m, sim_data, &viewer_data.perturb, viewer_data.paused);
 
-        if (!viewer_data.paused) {
+        if (advance_sim) {
           // --- MuJoCo simulation step1 ---
           mj_step1(m, sim_data);
 
@@ -344,7 +358,7 @@ int main(int argc, char** argv) {
           }
         }
       }
-      if (snapshot_due && (reset_requested || viewer_data.paused)) {
+      if (snapshot_due && !advance_sim) {
         std::copy_n(sim_data->qpos, snapshot_qpos.size(), snapshot_qpos.begin());
         std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
         snapshot_time = sim_data->time;
@@ -372,6 +386,8 @@ int main(int argc, char** argv) {
 
         FK(s.theta, s.bTj);
         mst.update_visualization(s, cmd.theta_t);
+        applied_aero_pos = mst.positions();
+        applied_aero_force = mst.forces();
       }
 
       // --- Publish a render snapshot at the viewer rate ---
@@ -423,6 +439,7 @@ int main(int argc, char** argv) {
     ViewerData viewer_data{};
     for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {viewer_data.theta_d[i] = mj_utils::g_command_theta[i];}
     viewer_data.theta_t = mj_utils::g_command_theta_t;
+    viewer_data.sim_speed = mj_utils::g_sim_speed;
     viewer_data.perturb = mj_utils::g_perturb;
     viewer_data.paused = mj_utils::g_paused;
     viewer_data.reset_epoch = mj_utils::g_reset_epoch;
@@ -469,34 +486,33 @@ int main(int argc, char** argv) {
         const Eigen::Matrix3d& bRhi = humerus_rotation.bRri[0];
         const Eigen::Matrix3d& bRmi = manus_rotation.bRri[0];
 
-        switch (mj_utils::g_arrow_quantity) {
-          case mj_utils::ARROW_NONE:
-            break;
+        if (mj_utils::g_arrow_view == mj_utils::ARROW_VIEW_WING || mj_utils::g_arrow_view == mj_utils::ARROW_VIEW_BOTH) {
+          switch (mj_utils::g_arrow_quantity) {
+            case mj_utils::ARROW_A:
+              mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.a_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.a_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.a_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_A:
-            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.a_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.a_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.a_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_W:
+              mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.w_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.w_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.w_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_W:
-            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.w_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.w_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.w_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_WDOT:
+              mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.wdot_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.wdot_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.wdot_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_WDOT:
-            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.wdot_h[wing], wing*param::NH, GRb, Gpb, bRhi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.wdot_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.wdot_m[wing], wing*param::NM, GRb, Gpb, bRmi, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            break;
-
-          case mj_utils::ARROW_V:
-          default:
-            mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.v_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.v_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.v_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_V:
+            default:
+              mj_utils::append_segment_vector<param::NH>(copied_strip_state.p_h, copied_strip_state.v_h, wing*param::NH, GRb, Gpb, bRhi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NR>(copied_strip_state.p_r, copied_strip_state.v_r, wing*param::NR, GRb, Gpb, radius_rotation.bRri, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+              mj_utils::append_segment_vector<param::NM>(copied_strip_state.p_m, copied_strip_state.v_m, wing*param::NM, GRb, Gpb, bRmi, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+              break;
+          }
         }
 
         mj_utils::append_humerus_strip_frames(copied_strip_state.p_h, wing*param::NH, GTb, bRhi, humerus_rotation.cos_psi[0]);
@@ -508,26 +524,25 @@ int main(int argc, char** argv) {
         const std::size_t idx0 = section*param::NT;
         const Eigen::Matrix3d& bRt = copied_strip_state.bR_t[section];
 
-        switch (mj_utils::g_arrow_quantity) {
-          case mj_utils::ARROW_NONE:
-            break;
+        if (mj_utils::g_arrow_view == mj_utils::ARROW_VIEW_TAIL || mj_utils::g_arrow_view == mj_utils::ARROW_VIEW_BOTH) {
+          switch (mj_utils::g_arrow_quantity) {
+            case mj_utils::ARROW_A:
+              mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.a_t, idx0, GRb, Gpb, bRt, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_A:
-            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.a_t, idx0, GRb, Gpb, bRt, mj_utils::A_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::A_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_W:
+              mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.w_t[section], idx0, GRb, Gpb, bRt, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_W:
-            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.w_t[section], idx0, GRb, Gpb, bRt, mj_utils::W_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::W_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_WDOT:
+              mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.wdot_t[section], idx0, GRb, Gpb, bRt, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
+              break;
 
-          case mj_utils::ARROW_WDOT:
-            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.wdot_t[section], idx0, GRb, Gpb, bRt, mj_utils::WDOT_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::WDOT_ARROW_COLOR);
-            break;
-
-          case mj_utils::ARROW_V:
-          default:
-            mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.v_t, idx0, GRb, Gpb, bRt, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
-            break;
+            case mj_utils::ARROW_V:
+            default:
+              mj_utils::append_segment_vector<param::NT>(copied_strip_state.p_t, copied_strip_state.v_t, idx0, GRb, Gpb, bRt, mj_utils::V_ARROW_SCALE, mj_utils::STATE_ARROW_WIDTH, mj_utils::V_ARROW_COLOR);
+              break;
+          }
         }
       }
       mj_utils::append_tail_strip_frames(copied_strip_state.p_t, copied_strip_state.bR_t, copied_strip_state.theta_t, GTb);
