@@ -38,8 +38,8 @@ namespace param {
   inline constexpr double KIN_GAIN = 2.2;
 
   inline constexpr std::array<double, NUM_JOINTS> INITIAL_DES_THETA{
-    0.0, -0.18, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.0, -0.18, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.0, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.0, -0.1, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
     0.0, 0.0
   };
 
@@ -239,10 +239,10 @@ namespace param {
   inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_EFFICIENCY =       {0.950, 0.950, 0.950, 0.950, 0.950, 0.950, 0.950, 0.950};
   inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_MAX_TORQUE =       {20.00, 15.00, 15.00, 15.00, 15.00, 15.00, 15.00, 15.00};  // [Nm]
   inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_VISCOUS_FRICTION = {0.002, 0.002, 0.002, 0.002, 0.002, 0.002, 0.002, 0.002};  // [Nm/(rad/s)]
-  inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_ROTOR_INERTIA =    {1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6};  // [kg m^2], motor side
-  inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_ESC_TIME_CONSTANT ={0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003};  // [s]
+  inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_ESC_TIME_CONSTANT ={.0003, .0003, .0003, .0003, .0003, .0003, .0003, .0003};  // [s]
   inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_KP =               {50.00, 30.00, 30.00, 30.00, 30.00, 30.00, 1.000, 5.000};  // [Nm/rad]
   inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_KD =               {1.000, 0.500, 0.500, 0.500, 0.500, 0.500, 0.050, 0.100};  // [Nm/(rad/s)]
+  inline constexpr std::array<double, NUM_MOTOR_MODELS> MOTOR_ROTOR_INERTIA =    {1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6, 1.e-6};  // [kg m^2], motor side
 
   inline constexpr std::array<const char*, NUM_JOINTS> ACTUATOR_NAMES = {
     "motor_J1", "motor_J2", "motor_J3", "motor_J4", "motor_J5", "motor_J6",

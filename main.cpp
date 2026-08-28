@@ -151,6 +151,7 @@ int main(int argc, char** argv) {
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::uint64_t sim_step = 0;
     double sim_step_credit = 0.0;
+    double flapping_phase = 0.0;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -179,6 +180,7 @@ int main(int argc, char** argv) {
         damping_torque.fill(0.0);
         sim_step = 0;
         sim_step_credit = 0.0;
+        flapping_phase = 0.0;
         handled_reset_epoch = viewer_data.reset_epoch;
       }
 
@@ -202,37 +204,67 @@ int main(int argc, char** argv) {
       if (elrs_enabled) {
         (void)elrs.update(elrs_channels);
 
-        const double phase = 6.0*M_PI*(static_cast<double>(elrs_channels[2])-172.0)/1638.0*static_cast<double>(sim_data->time);
-        const double sin_phase = std::sin(phase);
-        const double cos_phase = std::cos(phase);
-        const double flapping = 0.25*M_PI * static_cast<double>(elrs_channels[11]-172)/1638.0 * sin_phase;
-        const double pitching = 0.25*M_PI * static_cast<double>(elrs_channels[15]-992)/819.0 * cos_phase;
-        const double sweep = 0.25*M_PI * static_cast<double>(elrs_channels[1]-992)/819.0;
-
-        // asymmetric cosine
+        constexpr double ELRS_MIN = 172.0;
+        constexpr double ELRS_CENTER = 992.0;
+        constexpr double ELRS_MAX = 1810.0;
         constexpr double TWO_PI = 2.0 * M_PI;
-        constexpr double FOLD_RATIO = 0.3; // Fold: 30%, unfold: 70%
-        const double folding_amplitude = 0.25 * M_PI * (static_cast<double>(elrs_channels[10]) - 172.0) / 1638.0;
-        const double normalized_phase = phase / TWO_PI;
-        const double cycle_ratio = normalized_phase - std::floor(normalized_phase);  // [0, 1)
-        double folding;
-        if (cycle_ratio < FOLD_RATIO) {folding =  folding_amplitude * (std::cos(M_PI * cycle_ratio / FOLD_RATIO) - 1.0);} // Unfolded -> folded
-        else                          {folding = -folding_amplitude * (1.0 + std::cos(M_PI * (cycle_ratio - FOLD_RATIO) / (1.0 - FOLD_RATIO)));}// Folded -> unfolded
+        constexpr double R1 = 0.4;
+        constexpr double R2 = 0.3;
+        constexpr double MAX_THETA0_OFFSET = M_PI / 6.0;
+        constexpr double MAX_FLAPPING_AMPLITUDE = M_PI / 3.0;
+        constexpr double MAX_FOLDING_ANGLE = M_PI / 2.0;
+        constexpr double MAX_PITCHING_ANGLE = M_PI / 3.0;
+        constexpr double MAX_FLAPPING_FREQUENCY = 5.0;
+        constexpr double FREQUENCY_STOP_DEADBAND = 8.0;
 
-        cmd.theta[0]  = param::INITIAL_DES_THETA[0] + flapping;
-        cmd.theta[1]  = param::INITIAL_DES_THETA[1] + pitching;
-        cmd.theta[2]  = param::INITIAL_DES_THETA[2] + folding + sweep;
-        cmd.theta[3]  = param::INITIAL_DES_THETA[3] - param::KIN_GAIN*folding;
-        cmd.theta[4]  = J5_model(cmd.theta[2] - sweep);
-        cmd.theta[5]  = param::INITIAL_DES_THETA[5] + param::KIN_GAIN*folding;
+        const double flapping_bias_channel = std::clamp(static_cast<double>(elrs_channels[1]), ELRS_MIN, ELRS_MAX);
+        const double flapping_channel = std::clamp(static_cast<double>(elrs_channels[11]), ELRS_MIN, ELRS_MAX);
+        const double folding_channel = std::clamp(static_cast<double>(elrs_channels[10]), ELRS_MIN, ELRS_MAX);
+        const double frequency_channel = std::clamp(static_cast<double>(elrs_channels[2]), ELRS_MIN, ELRS_MAX);
 
-        cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping;
+        const double flapping_offset = flapping_bias_channel < ELRS_CENTER ? MAX_THETA0_OFFSET * (flapping_bias_channel - ELRS_CENTER) / (ELRS_CENTER - ELRS_MIN) : MAX_THETA0_OFFSET * (flapping_bias_channel - ELRS_CENTER) / (ELRS_MAX - ELRS_CENTER);
+        const double flapping_amplitude = MAX_FLAPPING_AMPLITUDE * (flapping_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
+        const double folding_amplitude = MAX_FOLDING_ANGLE * (folding_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
+        const double pitching_amplitude = MAX_PITCHING_ANGLE * (folding_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
+
+        // The deadband prevents slow phase drift caused by idle-stick jitter.
+        const double frequency_start = ELRS_MIN + FREQUENCY_STOP_DEADBAND;
+        const double flapping_frequency = MAX_FLAPPING_FREQUENCY * std::clamp((frequency_channel - frequency_start) / (ELRS_MAX - frequency_start), 0.0, 1.0);
+        const double cycle_ratio = flapping_phase / TWO_PI;
+
+        // 1. Asymmetric flapping motion.
+        double flapping_delta;
+        if (cycle_ratio < R1) {flapping_delta = flapping_amplitude * std::cos(M_PI * cycle_ratio / R1);}
+        else {flapping_delta = -flapping_amplitude * std::cos(M_PI * (cycle_ratio - R1) / (1.0 - R1));}
+
+        // 2. non-folding, folding, and unfolding motion.
+        double theta2 = 0.0;
+        double pitching = 0.0;
+        if (cycle_ratio >= R2) {
+          theta2 = 0.5 * folding_amplitude * (1.0 - std::cos(TWO_PI * (cycle_ratio - R2) / (1.0 - R2)));
+          pitching = 0.5 * pitching_amplitude * (1.0 - std::cos(TWO_PI * (cycle_ratio - R2) / (1.0 - R2)));
+        }
+
+        cmd.theta[0] = param::INITIAL_DES_THETA[0] + flapping_offset - flapping_delta;
+        cmd.theta[1] = param::INITIAL_DES_THETA[1] + pitching;
+        cmd.theta[2] = param::INITIAL_DES_THETA[2] - theta2;
+        cmd.theta[3] = param::INITIAL_DES_THETA[3] + param::KIN_GAIN * theta2;
+        cmd.theta[4] = J5_model(cmd.theta[2]);
+        cmd.theta[5] = param::INITIAL_DES_THETA[5] - 1.4*param::KIN_GAIN * theta2;
+
+        cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping_offset - flapping_delta;
         cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching;
-        cmd.theta[8]  = param::INITIAL_DES_THETA[8] + folding + sweep;
-        cmd.theta[9]  = param::INITIAL_DES_THETA[9] - param::KIN_GAIN*folding;
-        cmd.theta[10] = J5_model(cmd.theta[8] - sweep);
-        cmd.theta[11] = param::INITIAL_DES_THETA[11] + param::KIN_GAIN*folding;
+        cmd.theta[8]  = param::INITIAL_DES_THETA[8] - theta2;
+        cmd.theta[9]  = param::INITIAL_DES_THETA[9] + param::KIN_GAIN * theta2;
+        cmd.theta[10] = J5_model(cmd.theta[8]);
+        cmd.theta[11] = param::INITIAL_DES_THETA[11] - 1.4*param::KIN_GAIN * theta2;
+
         for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = param::INITIAL_DES_THETA[i];}
+
+        if (advance_sim) {
+          flapping_phase += TWO_PI * flapping_frequency * param::SIM_DT_SEC;
+          if (flapping_phase >= TWO_PI) {flapping_phase -= TWO_PI;}
+        }
 
         s.vel_f = Eigen::Vector3d((static_cast<double>(elrs_channels[14])-992.0)*(2.0/1638.0)*10.0, 0.0, 0.0);
         
