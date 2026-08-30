@@ -12,9 +12,10 @@
 #include <Eigen/Dense>
 
 struct State {
-  Eigen::Vector3d pos   = Eigen::Vector3d::Zero();       // [m], world NED
-  Eigen::Vector3d vel   = Eigen::Vector3d::Zero();       // [m/s], world NED
-  Eigen::Vector3d acc   = Eigen::Vector3d::Zero();       // [m/s^2], world NED
+  Eigen::Vector3d pos   = Eigen::Vector3d::Zero();       // [m], body origin, world NED
+  Eigen::Vector3d bpc   = Eigen::Vector3d::Zero();       // [m], body origin -> system CoM, body FRD
+  Eigen::Vector3d vel   = Eigen::Vector3d::Zero();       // [m/s], body origin, world NED
+  Eigen::Vector3d acc   = Eigen::Vector3d::Zero();       // [m/s^2], body origin, world NED
   Eigen::Matrix3d R     = Eigen::Matrix3d::Identity();   // [SO3], body FRD -> world NED
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();       // [rad/s] body FRD
   Eigen::Vector3d w_dot = Eigen::Vector3d::Zero();       // [rad/s^2] body FRD

@@ -25,6 +25,7 @@ HEADER_SIZE = 128
 DESCRIPTOR_SIZE = 96
 DTYPE_FLOAT32 = 1
 RAD2DEG = np.float32(180.0 / np.pi)
+FORCE_AVERAGE_WINDOW_SEC = 1.0
 AXES = ("x", "y", "z")
 SEGMENT_NAMES = ("RH", "RR", "RM", "LH", "LR", "LM", "RT", "LT")
 AGGREGATE_NAMES = SEGMENT_NAMES + ("Body",)
@@ -302,6 +303,24 @@ def rotation_to_rpy(rotation: np.ndarray) -> np.ndarray:
   return np.column_stack((roll, pitch, yaw)).astype(np.float32)*RAD2DEG
 
 
+def trailing_mean(values: np.ndarray, window_samples: int) -> np.ndarray:
+  window_samples = max(1, int(window_samples))
+  result = np.full(values.shape, np.nan, dtype=np.float32)
+  if values.shape[0] < window_samples:
+    return result
+
+  cumulative = np.empty((values.shape[0]+1, values.shape[1]), dtype=np.float64)
+  cumulative[0] = 0.0
+  np.cumsum(values, axis=0, dtype=np.float64, out=cumulative[1:])
+
+  end = np.arange(window_samples, values.shape[0]+1, dtype=np.int64)
+  start = end-window_samples
+  result[window_samples-1:] = (
+    (cumulative[end]-cumulative[start])/float(window_samples)
+  ).astype(np.float32)
+  return result
+
+
 def paper_text(text: str, size: int = 12) -> str:
   return f"<span style=\"font-family:'{PAPER_FONT}'; font-size:{size}pt; color:#000000;\">{text}</span>"
 
@@ -451,6 +470,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.tabs.currentChanged.connect(self._refresh_active_tab)
     layout.addWidget(self.tabs, 1)
     self._build_flight_tab()
+    self._build_wrench_tab()
     self._build_joint_tab()
     self._build_strip_flow_tab()
     self._build_strip_load_tab()
@@ -519,14 +539,25 @@ class MonitorWindow(QtWidgets.QMainWindow):
     )
     for row, (group, titles, unit) in enumerate(groups):
       for axis, title in enumerate(titles):
-        plot = self._plot(graphics, row, axis, title, unit, False, False)
+        plot = self._plot(graphics, row, axis, title, unit, False, row == len(groups)-1)
         self.curves[f"flight.{group}.{axis}.state"] = plot.plot(pen=blue, name="state")
         self.curves[f"flight.{group}.{axis}.cmd"] = plot.plot(pen=red, name="cmd")
+
+  def _build_wrench_tab(self) -> None:
+    graphics = pg.GraphicsLayoutWidget()
+    self.tabs.addTab(graphics, "Wrench")
+    blue = pg.mkPen((30, 90, 210), width=2)
+    blue_dotted = pg.mkPen((30, 90, 210), width=2, style=QtCore.Qt.DotLine)
     for axis, axis_name in enumerate(AXES):
-      plot = self._plot(graphics, 4, axis, f"<i>F</i><sub>{axis_name}</sub><sup>W</sup>", "N", False, True)
-      if axis < 2: plot.setYRange(-50.0, 50.0, padding=0.0)
-      else: plot.setYRange(-80.0, 10.0, padding=0.0)
-      self.curves[f"flight.aero_force.{axis}"] = plot.plot(pen=blue)
+      plot = self._plot(graphics, 0, axis, f"<i>F</i><sub>{axis_name}</sub><sup>W</sup>", "N", False, False)
+      plot.setYRange(-25.0, 10.0, padding=0.0)
+      self.curves[f"wrench.aero_force.{axis}"] = plot.plot(pen=blue)
+      self.curves[f"wrench.aero_force_mean.{axis}"] = plot.plot(pen=blue_dotted)
+
+      plot = self._plot(graphics, 1, axis, f"<i>M</i><sub>{axis_name}</sub><sup>W</sup>", "N m", False, True)
+      plot.setYRange(-5.0, 5.0, padding=0.0)
+      self.curves[f"wrench.aero_moment.{axis}"] = plot.plot(pen=blue)
+      self.curves[f"wrench.aero_moment_mean.{axis}"] = plot.plot(pen=blue_dotted)
 
   def _build_joint_tab(self) -> None:
     joint_tabs = QtWidgets.QTabWidget()
@@ -544,8 +575,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
         show_time_values = row == joint_count-1
         angle_plot = self._plot(graphics, row, 0, f"<i>&theta;</i><sub>{joint+1}</sub>", "&deg;", False, show_time_values)
         torque_plot = self._plot(graphics, row, 1, f"<i>&tau;</i><sub>{joint+1}</sub>", "N m", row == 0, show_time_values)
-        angle_plot.setYRange(INITIAL_JOINT_DEG[joint]-100.0, INITIAL_JOINT_DEG[joint]+100.0, padding=0.0)
-        torque_plot.setYRange(-12.0, 12.0, padding=0.0)
+        angle_plot.setYRange(INITIAL_JOINT_DEG[joint]-60.0, INITIAL_JOINT_DEG[joint]+60.0, padding=0.0)
+        torque_plot.setYRange(-6.0, 6.0, padding=0.0) if joint == 0 else torque_plot.setYRange(-2.0, 2.0, padding=0.0)
         self.curves[f"joint.{joint}.state"] = angle_plot.plot(pen=blue, name="state")
         self.curves[f"joint.{joint}.cmd"] = angle_plot.plot(pen=red, name="cmd")
         self.curves[f"joint.{joint}.torque.total"] = torque_plot.plot(pen=total_torque_pen, name="total")
@@ -663,7 +694,11 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.header = header
     self.descriptors = descriptors
     self.channel_names = [descriptor.name for descriptor in descriptors]
-    self.history = HistoryBuffer(header.capacity)
+    average_window_samples = max(
+      1,
+      int(round(FORCE_AVERAGE_WINDOW_SEC*header.log_hz))
+    )
+    self.history = HistoryBuffer(header.capacity + average_window_samples-1)
     self.browser_combo.blockSignals(True)
     self.browser_combo.clear()
     self.browser_combo.addItems(self.channel_names)
@@ -699,14 +734,46 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.browser_plot.setTitle(paper_text(channel_title(descriptor.name, descriptor.frame)))
     self._refresh_active_tab()
 
-  def _data(self, names: Sequence[str]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+  def _data(
+    self,
+    names: Sequence[str],
+    preroll_samples: int = 0
+  ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    preroll_samples = max(0, int(preroll_samples))
+
     if self.replay_path is not None:
       if self.replay_time.size == 0: return self.replay_time, {}
       relative = self.replay_time-self.replay_time[0]
-      mask = (relative >= self.range_from.value()) & (relative <= self.range_to.value())
-      return self.replay_time[mask], {name: self.replay_channels[name][mask] for name in names}
+      visible_start = int(np.searchsorted(relative, self.range_from.value(), side="left"))
+      visible_end = int(np.searchsorted(relative, self.range_to.value(), side="right"))
+      start = max(0, visible_start-preroll_samples)
+      sl = slice(start, visible_end)
+      return self.replay_time[sl], {name: self.replay_channels[name][sl] for name in names}
+
     if self.history is None: return np.empty((0,), np.float64), {}
-    return self.history.get(names)
+    time, channels = self.history.get(names)
+    if time.size == 0: return time, channels
+
+    keep = self.header.capacity+preroll_samples
+    if time.size > keep:
+      time = time[-keep:]
+      channels = {name: values[-keep:] for name, values in channels.items()}
+    return time, channels
+
+  def _crop_to_display(
+    self,
+    time: np.ndarray,
+    channels: Dict[str, np.ndarray]
+  ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    if time.size == 0: return time, channels
+
+    if self.replay_path is not None:
+      relative = time-self.replay_time[0]
+      mask = (relative >= self.range_from.value()) & (relative <= self.range_to.value())
+      return time[mask], {name: values[mask] for name, values in channels.items()}
+
+    start = max(0, time.size-self.header.capacity)
+    return time[start:], {name: values[start:] for name, values in channels.items()}
 
   def _view(self, time: np.ndarray, channels: Dict[str, np.ndarray]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     if time.size == 0: return time, channels
@@ -735,14 +802,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.flow_speed_comparison_visible = visible
 
   def _update_flight(self) -> None:
-    names = ("state.pos", "state.vel", "state.R", "state.w", "cmd.pos", "cmd.vel", "cmd.R", "cmd.w", "segment.force", "body.ellipsoid_force")
+    names = ("state.pos", "state.vel", "state.R", "state.w", "cmd.pos", "cmd.vel", "cmd.R", "cmd.w")
     time, channels = self._data(names)
     time, channels = self._view(time, channels)
     if time.size == 0: return
     state_rpy = rotation_to_rpy(channels["state.R"])
     cmd_rpy = rotation_to_rpy(channels["cmd.R"])
-    body_aero_force = np.sum(channels["segment.force"], axis=1)+channels["body.ellipsoid_force"]
-    world_aero_force = np.einsum("nij,nj->ni", channels["state.R"], body_aero_force)
     for axis in range(3):
       self._set_curve(f"flight.pos.{axis}.state", time, channels["state.pos"][:, axis])
       self._set_curve(f"flight.pos.{axis}.cmd", time, channels["cmd.pos"][:, axis])
@@ -752,7 +817,26 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"flight.rpy.{axis}.cmd", time, cmd_rpy[:, axis])
       self._set_curve(f"flight.w.{axis}.state", time, channels["state.w"][:, axis]*RAD2DEG)
       self._set_curve(f"flight.w.{axis}.cmd", time, channels["cmd.w"][:, axis]*RAD2DEG)
-      self._set_curve(f"flight.aero_force.{axis}", time, world_aero_force[:, axis])
+
+  def _update_wrench(self) -> None:
+    names = ("state.R", "segment.pos", "segment.force", "segment.torque", "body.ellipsoid_pos", "body.ellipsoid_force", "body.ellipsoid_torque")
+    window_samples = max(1, int(round(FORCE_AVERAGE_WINDOW_SEC*self.header.log_hz)))
+    preroll_samples = window_samples-1
+    time, channels = self._data(names, preroll_samples=preroll_samples)
+    if time.size == 0: return
+    body_aero_force = np.sum(channels["segment.force"], axis=1)+channels["body.ellipsoid_force"]
+    body_aero_moment = (np.sum(np.cross(channels["segment.pos"], channels["segment.force"])+channels["segment.torque"], axis=1) + np.cross(channels["body.ellipsoid_pos"], channels["body.ellipsoid_force"]) + channels["body.ellipsoid_torque"])
+    world_aero_force = np.einsum("nij,nj->ni", channels["state.R"], body_aero_force)
+    world_aero_moment = np.einsum("nij,nj->ni", channels["state.R"], body_aero_moment)
+    world_aero_force_mean = trailing_mean(world_aero_force, window_samples)
+    world_aero_moment_mean = trailing_mean(world_aero_moment, window_samples)
+    time, wrench = self._crop_to_display(time, {"force": world_aero_force, "force_mean": world_aero_force_mean, "moment": world_aero_moment, "moment_mean": world_aero_moment_mean})
+    time, wrench = self._view(time, wrench)
+    for axis in range(3):
+      self._set_curve(f"wrench.aero_force.{axis}", time, wrench["force"][:, axis])
+      self._set_curve(f"wrench.aero_force_mean.{axis}", time, wrench["force_mean"][:, axis])
+      self._set_curve(f"wrench.aero_moment.{axis}", time, wrench["moment"][:, axis])
+      self._set_curve(f"wrench.aero_moment_mean.{axis}", time, wrench["moment_mean"][:, axis])
 
   def _update_joints(self) -> None:
     has_damping_torque = "joint.damping_torque" in self.channel_names
@@ -865,11 +949,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
     if self.header is None: return
     index = self.tabs.currentIndex()
     if index == 0: self._update_flight()
-    elif index == 1: self._update_joints()
-    elif index == 2: self._update_strip_flow()
-    elif index == 3: self._update_strip_loads()
-    elif index == 4: self._update_aggregate()
-    elif index == 5: self._update_browser()
+    elif index == 1: self._update_wrench()
+    elif index == 2: self._update_joints()
+    elif index == 3: self._update_strip_flow()
+    elif index == 4: self._update_strip_loads()
+    elif index == 5: self._update_aggregate()
+    elif index == 6: self._update_browser()
 
   def _new_recorder(self) -> None:
     if self.record_enabled and self.reader.header is not None:
@@ -928,7 +1013,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self.dropped_total += dropped
       self._consume(time, channels, dropped)
       self._refresh_active_tab()
-      self.status_label.setText(f"{self.header.log_hz} Hz | samples={self.history.count} | " f"wc={wc} | dropped={self.dropped_total}")
+      visible_samples = min(self.history.count, self.header.capacity)
+      self.status_label.setText(f"{self.header.log_hz} Hz | samples={visible_samples} | " f"wc={wc} | dropped={self.dropped_total}")
     except FileNotFoundError:
       self.status_label.setText(f"waiting: {self.mmap_path}")
     except Exception as error:

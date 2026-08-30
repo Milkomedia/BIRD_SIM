@@ -9,9 +9,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <string>
 
 namespace mj_utils {
@@ -20,6 +24,7 @@ namespace mj_utils {
   inline mjData* g_data = nullptr;
 
   inline mjvCamera g_camera;
+  inline std::array<mjtNum, 3> g_camera_pan_offset{};
   inline mjvOption g_option;
   inline mjvPerturb g_perturb;
   inline mjvScene g_scene;
@@ -65,19 +70,157 @@ namespace mj_utils {
     ARROW_VIEW_BOTH
   };
 
-  inline int g_arrow_view = ARROW_VIEW_BOTH;
+  inline int g_arrow_view = ARROW_VIEW_NONE;
+
+  enum TrajectoryView : int {
+    TRAJECTORY_VIEW_OFF = 0,
+    TRAJECTORY_VIEW_ON
+  };
+
+  inline int g_trajectory_view = TRAJECTORY_VIEW_ON;
 
   inline constexpr double V_ARROW_SCALE = 0.25;        // [s]
   inline constexpr double A_ARROW_SCALE = 0.01;        // [s^2]
   inline constexpr double W_ARROW_SCALE = 0.02;        // [m.s/rad]
   inline constexpr double WDOT_ARROW_SCALE = 0.001;    // [m.s^2/rad]
   inline constexpr double STATE_ARROW_WIDTH = 0.0015;  // [m]
+  inline constexpr double MANUS_TRAIL_WIDTH = 0.0015;  // [m]
+  inline constexpr std::size_t MANUS_TRAIL_SAMPLE_MULTIPLIER = 3;
 
   inline constexpr std::array<float, 4> V_ARROW_COLOR    = {0.35f, 0.80f, 1.00f, 0.50f};
   inline constexpr std::array<float, 4> A_ARROW_COLOR    = {1.00f, 0.40f, 0.10f, 0.50f};
   inline constexpr std::array<float, 4> W_ARROW_COLOR    = {0.85f, 0.20f, 0.95f, 0.50f};
   inline constexpr std::array<float, 4> WDOT_ARROW_COLOR = {1.00f, 0.85f, 0.10f, 0.50f};
   inline constexpr std::array<float, 4> AERO_FORCE_ARROW_COLOR = {1.00f, 0.00f, 0.00f, 0.90f};
+  inline constexpr std::array<float, 4> MANUS_FIRST_TRAIL_COLOR = {1.00f, 0.65f, 0.30f, 0.35f};
+  inline constexpr std::array<float, 4> MANUS_LAST_TRAIL_COLOR = {0.45f, 0.85f, 1.00f, 0.35f};
+
+  class ManusTrajectory {
+  public:
+    void set_enabled(const bool enabled) {
+      enabled_.store(enabled, std::memory_order_release);
+      if (!enabled) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& trail : trails_) {trail.clear();}
+      }
+    }
+
+    void reset() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto& trail : trails_) {trail.clear();}
+      next_sample_time_ = -1.0;
+      previous_time_ = -1.0;
+    }
+
+    void sample_if_due(const double sim_time, const std::array<Eigen::Vector3d, 2*param::NM>& body_manus_positions, const Eigen::Matrix3d& world_R_body, const Eigen::Vector3d& world_p_body) {
+      if (!std::isfinite(sim_time)) {
+        reset();
+        return;
+      }
+      if (!enabled_.load(std::memory_order_acquire)) {
+        next_sample_time_ = -1.0;
+        previous_time_ = sim_time;
+        return;
+      }
+      if (previous_time_ >= 0.0 && sim_time < previous_time_) {reset();}
+      previous_time_ = sim_time;
+      if (next_sample_time_ >= 0.0 && sim_time+1.e-12 < next_sample_time_) {return;}
+      if (!world_R_body.allFinite() || !world_p_body.allFinite()) {return;}
+
+      std::array<Eigen::Vector3d, NUM_TRAILS> sampled_position{};
+      std::array<bool, NUM_TRAILS> sampled_position_valid{};
+      for (std::size_t wing=0; wing<2; ++wing) {
+        for (std::size_t point=0; point<MANUS_FRAME_INDICES.size(); ++point) {
+          const std::size_t trail_idx = wing*TRAILS_PER_WING+point;
+          const Eigen::Vector3d& body_position = body_manus_positions[wing*param::NM+MANUS_FRAME_INDICES[point]];
+          sampled_position_valid[trail_idx] = body_position.allFinite() && body_position.squaredNorm() > 1.e-12;
+          if (sampled_position_valid[trail_idx]) {sampled_position[trail_idx] = world_p_body+world_R_body*body_position;}
+        }
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled_.load(std::memory_order_relaxed)) {return;}
+        bool sample_added = false;
+        const double oldest_stored_time = sim_time - STORED_DURATION;
+        for (std::size_t trail_idx=0; trail_idx<NUM_TRAILS; ++trail_idx) {
+          while (!trails_[trail_idx].empty() && trails_[trail_idx].front().time < oldest_stored_time) {trails_[trail_idx].pop_front();}
+          if (sampled_position_valid[trail_idx]) {
+            trails_[trail_idx].push_back({sim_time, sampled_position[trail_idx]});
+            sample_added = true;
+          }
+        }
+        if (!sample_added) {return;}
+      }
+
+      if (next_sample_time_ < 0.0) {next_sample_time_ = sim_time+SAMPLE_DT;}
+      else {do {next_sample_time_ += SAMPLE_DT;} while (next_sample_time_ <= sim_time+1.e-12);}
+    }
+
+    void render(const double sim_time, const std::array<Eigen::Vector3d, 2*param::NM>& body_manus_positions, const Eigen::Matrix4d& world_T_body) {
+      if (!enabled_.load(std::memory_order_acquire) || !std::isfinite(sim_time) || !world_T_body.allFinite()) {return;}
+
+      std::array<std::deque<Sample>, NUM_TRAILS> visible_trails{};
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        visible_trails = trails_;
+      }
+
+      const double oldest_visible_time = sim_time-TRAIL_DURATION;
+      for (auto& trail : visible_trails) {
+        while (!trail.empty() && trail.front().time < oldest_visible_time) {trail.pop_front();}
+        while (!trail.empty() && trail.back().time > sim_time+1.e-12) {trail.pop_back();}
+      }
+
+      const Eigen::Matrix3d world_R_body = world_T_body.block<3, 3>(0, 0);
+      const Eigen::Vector3d world_p_body = world_T_body.block<3, 1>(0, 3);
+      for (std::size_t wing=0; wing<2; ++wing) {
+        for (std::size_t point=0; point<MANUS_FRAME_INDICES.size(); ++point) {
+          const std::size_t trail_idx = wing*TRAILS_PER_WING+point;
+          const std::deque<Sample>& trail = visible_trails[trail_idx];
+          const std::array<float, 4>& color = point == 0 ? MANUS_FIRST_TRAIL_COLOR : MANUS_LAST_TRAIL_COLOR;
+          for (std::size_t i=1; i<trail.size(); ++i) {append_segment(trail[i-1].position, trail[i].position, color);}
+          const Eigen::Vector3d& body_position = body_manus_positions[wing*param::NM+MANUS_FRAME_INDICES[point]];
+          if (!trail.empty() && body_position.allFinite() && body_position.squaredNorm() > 1.e-12) {append_segment(trail.back().position, world_p_body+world_R_body*body_position, color);}
+        }
+      }
+    }
+
+  private:
+    struct Sample {
+      double time;
+      Eigen::Vector3d position;
+    };
+
+    static constexpr double TRAIL_DURATION = 0.5; // [s], simulation time
+    static constexpr double RENDER_DT = std::chrono::duration<double>(param::RENDER_DT_US).count();
+    static constexpr double SAMPLE_DT = RENDER_DT/static_cast<double>(MANUS_TRAIL_SAMPLE_MULTIPLIER);
+    static constexpr double STORED_DURATION = TRAIL_DURATION+RENDER_DT;
+    static constexpr std::array<std::size_t, 2> MANUS_FRAME_INDICES = {0, param::NM-1};
+    static constexpr std::size_t TRAILS_PER_WING = MANUS_FRAME_INDICES.size();
+    static constexpr std::size_t NUM_TRAILS = 2*TRAILS_PER_WING;
+
+    static void append_segment(const Eigen::Vector3d& from_point, const Eigen::Vector3d& to_point, const std::array<float, 4>& color) {
+      if (!from_point.allFinite() || !to_point.allFinite() || (to_point-from_point).squaredNorm() < 1.e-12 || g_scene.ngeom >= g_scene.maxgeom) {return;}
+
+      const mjtNum from[3] = {static_cast<mjtNum>(from_point(0)), static_cast<mjtNum>(from_point(1)), static_cast<mjtNum>(from_point(2))};
+      const mjtNum to[3] = {static_cast<mjtNum>(to_point(0)), static_cast<mjtNum>(to_point(1)), static_cast<mjtNum>(to_point(2))};
+
+      mjvGeom& geom = g_scene.geoms[g_scene.ngeom];
+      mjv_initGeom(&geom, mjGEOM_CAPSULE, nullptr, nullptr, nullptr, color.data());
+      mjv_connector(&geom, mjGEOM_CAPSULE, static_cast<mjtNum>(MANUS_TRAIL_WIDTH), from, to);
+      geom.category = mjCAT_DECOR;
+      ++g_scene.ngeom;
+    }
+
+    std::array<std::deque<Sample>, NUM_TRAILS> trails_{};
+    std::atomic<bool> enabled_{true};
+    std::mutex mutex_;
+    double next_sample_time_ = -1.0;
+    double previous_time_ = -1.0;
+  };
+
+  inline ManusTrajectory g_manus_trajectory{};
 
   inline void layout_ui(GLFWwindow* window) {
     int framebuffer_width = 0;
@@ -144,6 +287,7 @@ namespace mj_utils {
 
     mjuiItem* changed = mjui_event(&g_ui, &g_ui_state, &g_context);
     if (changed && changed->pdata == &g_sim_speed) {sync_pause_from_sim_speed();}
+    if (changed && changed->pdata == &g_trajectory_view) {g_manus_trajectory.set_enabled(g_trajectory_view == TRAJECTORY_VIEW_ON);}
     return changed != nullptr || g_ui_state.mouserect == g_ui.rectid || g_ui_state.dragrect == g_ui.rectid || (g_ui_state.type == mjEVENT_KEY && g_ui_state.key == 0);
   }
 
@@ -165,6 +309,7 @@ namespace mj_utils {
     }
     else if (key == GLFW_KEY_BACKSPACE) {
       ++g_reset_epoch;
+      g_camera_pan_offset.fill(0.0);
       mjv_defaultPerturb(&g_perturb);
       return;
     }
@@ -473,11 +618,21 @@ namespace mj_utils {
     else if (g_left_pressed) {action = shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;}
     else {action = mjMOUSE_ZOOM;}
 
+    const bool is_pan = action == mjMOUSE_MOVE_H || action == mjMOUSE_MOVE_V;
+    std::array<mjtNum, 3> lookat_before{};
+    if (is_pan) {std::copy_n(g_camera.lookat, lookat_before.size(), lookat_before.begin());}
+
     #if mjVERSION_HEADER >= 3011000
       mjv_moveCamera(g_model, action, dx / height, dy / height, &g_camera);
     #else
       mjv_moveCamera(g_model, action, dx / height, dy / height, &g_scene, &g_camera);
     #endif
+
+    if (is_pan) {
+      for (std::size_t axis = 0; axis < g_camera_pan_offset.size(); ++axis) {
+        g_camera_pan_offset[axis] += g_camera.lookat[axis] - lookat_before[axis];
+      }
+    }
   }
 
   inline void scroll_callback(GLFWwindow* window, double x_offset, double y_offset) {
@@ -562,6 +717,7 @@ namespace mj_utils {
       {mjITEM_SECTION, "view control", 1, nullptr, ""},
       {mjITEM_SELECT, "tgt", 2, &g_arrow_view, "none\nwing\ntail\nboth"},
       {mjITEM_SELECT, "type", 2, &g_arrow_quantity, "v [m/s]\na [m/s^2]\nw [rad/s]\nwdot [rad/s^2]"},
+      {mjITEM_SELECT, "trj", 2, &g_trajectory_view, "off\non"},
       {mjITEM_END}
     };
     mjui_add(&g_ui, definitions);

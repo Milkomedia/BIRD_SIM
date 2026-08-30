@@ -223,6 +223,7 @@ void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch
   data.reset_epoch = reset_epoch;
 
   copy_vector(data.state_pos, s.pos);
+  copy_vector(data.state_bpc, s.bpc);
   copy_vector(data.state_vel, s.vel);
   copy_vector(data.state_w, s.w);
   copy_vector(data.cmd_pos, cmd.pos);

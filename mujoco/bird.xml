@@ -7,8 +7,8 @@
     <default class="damper_J2"> <joint damping="0.01"/></default>
     <default class="damper_J3"> <joint damping="0.01"/></default>
     <default class="damper_J4"> <joint damping="0.01"/></default>
-    <default class="damper_J5"> <joint damping="0.01"/></default>
-    <default class="damper_J6"> <joint damping="0.01"/></default>
+    <default class="damper_J5"> <joint damping="0.05"/></default>
+    <default class="damper_J6"> <joint damping="0.05"/></default>
     <default class="damper_J13"><joint damping="0.01"/></default>
     <default class="damper_J14"><joint damping="0.01"/></default>
   </default>

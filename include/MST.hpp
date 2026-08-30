@@ -149,7 +149,12 @@ public:
 
 private:
   static constexpr std::size_t NUM_WING_STRIPS = 2*(param::NH + param::NR + param::NM);
-  static constexpr std::size_t WAKE_SPAN_NODES = param::WAKE_SPAN_PANELS+1;
+  static constexpr std::size_t HALF_WAKE_SPAN_NODES = param::WAKE_SPAN_PANELS+1;
+  static constexpr std::size_t FULL_WAKE_SPAN_NODES = 2*HALF_WAKE_SPAN_NODES;
+  static constexpr std::size_t FULL_WAKE_SPAN_PANELS = FULL_WAKE_SPAN_NODES-1;
+  static constexpr std::size_t BODY_BRIDGE_PANEL = HALF_WAKE_SPAN_NODES-1;
+  static constexpr std::size_t LEFT_ROOT_NODE = BODY_BRIDGE_PANEL;
+  static constexpr std::size_t RIGHT_ROOT_NODE = BODY_BRIDGE_PANEL+1;
   static constexpr std::size_t WAKE_AGE_NODES = param::WAKE_AGE_CELLS+1;
 
   struct DynamicStallState {
@@ -177,12 +182,12 @@ private:
   std::array<double, param::NT> tail_chord_{}; // Shared by the right and left tail sections [m]
   std::array<double, param::NT> tail_width_{}; // Exposed strip width [m]
   std::array<double, NUM_WING_STRIPS> wing_circulation_{}; // Effective bound circulation [m^2/s]
-  std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, 2> bound_wake_nodes_{}; // Current quarter-chord nodes, world NED
-  std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, 2> trailing_edge_wake_nodes_{}; // Current trailing-edge nodes, world NED
-  std::array<std::array<double, param::WAKE_SPAN_PANELS>, 2> bound_wake_gamma_{};
-  std::array<std::array<double, param::WAKE_SPAN_PANELS>, 2> wake_gamma_sum_{};
-  std::array<std::array<std::array<Eigen::Vector3d, WAKE_SPAN_NODES>, WAKE_AGE_NODES>, 2> wake_nodes_{};
-  std::array<std::array<std::array<double, param::WAKE_SPAN_PANELS>, param::WAKE_AGE_CELLS>, 2> wake_gamma_{};
+  std::array<Eigen::Vector3d, FULL_WAKE_SPAN_NODES> bound_wake_nodes_{}; // Current quarter-chord nodes from left tip to right tip, world NED
+  std::array<Eigen::Vector3d, FULL_WAKE_SPAN_NODES> trailing_edge_wake_nodes_{}; // Current trailing-edge nodes from left tip to right tip, world NED
+  std::array<double, FULL_WAKE_SPAN_PANELS> bound_wake_gamma_{}; // Includes the center body-bridge panel
+  std::array<double, FULL_WAKE_SPAN_PANELS> wake_gamma_sum_{};
+  std::array<std::array<Eigen::Vector3d, FULL_WAKE_SPAN_NODES>, WAKE_AGE_NODES> wake_nodes_{};
+  std::array<std::array<double, FULL_WAKE_SPAN_PANELS>, param::WAKE_AGE_CELLS> wake_gamma_{};
   std::array<Eigen::Vector3d, 2*param::NT> tail_wake_velocity_world_{};
   std::size_t wake_valid_cells_ = 0;
   std::size_t wake_sample_count_ = 0;

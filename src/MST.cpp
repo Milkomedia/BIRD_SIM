@@ -22,16 +22,12 @@ void MST::reset() {
   tail_chord_.fill(0.0);
   tail_width_.fill(0.0);
   wing_circulation_.fill(0.0);
-  for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : bound_wake_nodes_) {row.fill(zero);}
-  for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : trailing_edge_wake_nodes_) {row.fill(zero);}
-  for (std::array<double, param::WAKE_SPAN_PANELS>& row : bound_wake_gamma_) {row.fill(0.0);}
-  for (std::array<double, param::WAKE_SPAN_PANELS>& row : wake_gamma_sum_) {row.fill(0.0);}
-  for (auto& wing : wake_nodes_) {
-    for (std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& row : wing) {row.fill(zero);}
-  }
-  for (auto& wing : wake_gamma_) {
-    for (std::array<double, param::WAKE_SPAN_PANELS>& row : wing) {row.fill(0.0);}
-  }
+  bound_wake_nodes_.fill(zero);
+  trailing_edge_wake_nodes_.fill(zero);
+  bound_wake_gamma_.fill(0.0);
+  wake_gamma_sum_.fill(0.0);
+  for (std::array<Eigen::Vector3d, FULL_WAKE_SPAN_NODES>& row : wake_nodes_) {row.fill(zero);}
+  for (std::array<double, FULL_WAKE_SPAN_PANELS>& row : wake_gamma_) {row.fill(0.0);}
   tail_wake_velocity_world_.fill(zero);
   wake_valid_cells_ = 0;
   wake_sample_count_ = 0;
@@ -525,6 +521,7 @@ void MST::update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_d
 void MST::update_wake_source(const State& s) {
   static_assert(param::NH == 7 && param::NR == 6 && param::NM == 25, "Wake source map must follow the wing strip layout.");
   static_assert(param::WAKE_SPAN_PANELS == 12, "Wake source map must contain 12 span panels.");
+  static_assert(FULL_WAKE_SPAN_NODES == 2*HALF_WAKE_SPAN_NODES, "Full-span wake node count is inconsistent.");
 
   constexpr std::array<std::size_t, 8> MANUS_NODE_INDEX{3, 6, 9, 12, 15, 18, 21, 24};
   const auto humerus_chord = [](const std::size_t i) {return param::C_H0 + param::DL_H*static_cast<double>(i);};
@@ -541,23 +538,29 @@ void MST::update_wake_source(const State& s) {
     const Eigen::Matrix3d& bRh = strip_state_.humerus_rotation[wing].bRri[0];
     const std::array<Eigen::Matrix3d, param::NR>& bRr = strip_state_.radius_rotation[wing].bRri;
     const Eigen::Matrix3d& bRm = strip_state_.manus_rotation[wing].bRri[0];
-    std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& quarter_chord_nodes = bound_wake_nodes_[wing];
-    std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& trailing_edge_nodes = trailing_edge_wake_nodes_[wing];
-    std::array<double, WAKE_SPAN_NODES> node_gamma{};
+    std::array<double, HALF_WAKE_SPAN_NODES> node_gamma{};
 
-    const auto set_node = [&s, &quarter_chord_nodes, &trailing_edge_nodes, &node_gamma](const std::size_t node, const Eigen::Vector3d& leading_edge, const Eigen::Matrix3d& rotation, const double chord, const double gamma) {
+    // The global row runs left tip -> left root -> right root -> right tip.
+    // The two consecutive root nodes form the single body-bridge panel.
+    const auto full_node_index = [wing](const std::size_t node) {
+      return wing == 0 ? RIGHT_ROOT_NODE+node : LEFT_ROOT_NODE-node;
+    };
+
+    const auto set_node = [&s, &full_node_index, &node_gamma, this](const std::size_t node, const Eigen::Vector3d& leading_edge, const Eigen::Matrix3d& rotation, const double chord, const double gamma) {
       const Eigen::Vector3d chord_vector = chord*rotation.col(0);
-      quarter_chord_nodes[node] = s.pos + s.R*(leading_edge + 0.25*chord_vector);
-      trailing_edge_nodes[node] = s.pos + s.R*(leading_edge + chord_vector);
+      const std::size_t full_node = full_node_index(node);
+      bound_wake_nodes_[full_node] = s.pos + s.R*(leading_edge + 0.25*chord_vector);
+      trailing_edge_wake_nodes_[full_node] = s.pos + s.R*(leading_edge + chord_vector);
       node_gamma[node] = gamma;
     };
-    const auto set_joint_node = [&s, &quarter_chord_nodes, &trailing_edge_nodes, &node_gamma](const std::size_t node, const Eigen::Vector3d& leading_edge0, const Eigen::Matrix3d& rotation0, const double chord0, const double gamma0, const Eigen::Vector3d& leading_edge1, const Eigen::Matrix3d& rotation1, const double chord1, const double gamma1) {
+    const auto set_joint_node = [&s, &full_node_index, &node_gamma, this](const std::size_t node, const Eigen::Vector3d& leading_edge0, const Eigen::Matrix3d& rotation0, const double chord0, const double gamma0, const Eigen::Vector3d& leading_edge1, const Eigen::Matrix3d& rotation1, const double chord1, const double gamma1) {
       const Eigen::Vector3d chord_vector0 = chord0*rotation0.col(0);
       const Eigen::Vector3d chord_vector1 = chord1*rotation1.col(0);
       const Eigen::Vector3d quarter_chord = 0.5*(leading_edge0 + 0.25*chord_vector0 + leading_edge1 + 0.25*chord_vector1);
       const Eigen::Vector3d trailing_edge = 0.5*(leading_edge0 + chord_vector0 + leading_edge1 + chord_vector1);
-      quarter_chord_nodes[node] = s.pos + s.R*quarter_chord;
-      trailing_edge_nodes[node] = s.pos + s.R*trailing_edge;
+      const std::size_t full_node = full_node_index(node);
+      bound_wake_nodes_[full_node] = s.pos + s.R*quarter_chord;
+      trailing_edge_wake_nodes_[full_node] = s.pos + s.R*trailing_edge;
       node_gamma[node] = 0.5*(gamma0+gamma1);
     };
 
@@ -571,11 +574,18 @@ void MST::update_wake_source(const State& s) {
       set_node(5+i, strip_state_.p_m[m_idx0+strip], bRm, manus_chord(strip), wing_circulation_[m_state_idx0+strip]);
     }
 
-    const double orientation = param::STRIP_SPAN_SIGN[wing];
     for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
-      bound_wake_gamma_[wing][panel] = 0.5*orientation*(node_gamma[panel]+node_gamma[panel+1]);
+      const std::size_t full_panel = wing == 0 ? RIGHT_ROOT_NODE+panel : BODY_BRIDGE_PANEL-1-panel;
+      bound_wake_gamma_[full_panel] = 0.5*(node_gamma[panel]+node_gamma[panel+1]);
     }
   }
+
+  // Use the mean physical root loading to continue circulation through the
+  // body. Symmetric wing loading therefore produces no concentrated root leg.
+  bound_wake_gamma_[BODY_BRIDGE_PANEL] = 0.5*(
+    bound_wake_gamma_[BODY_BRIDGE_PANEL-1]
+    + bound_wake_gamma_[BODY_BRIDGE_PANEL+1]
+  );
 }
 
 bool MST::update_wake(const State& s) {
@@ -584,15 +594,13 @@ bool MST::update_wake(const State& s) {
 
   update_wake_source(s);
   if (!wake_initialized_) {
-    for (std::size_t wing=0; wing<2; ++wing) {wake_nodes_[wing][0] = trailing_edge_wake_nodes_[wing];}
+    wake_nodes_[0] = trailing_edge_wake_nodes_;
     wake_initialized_ = true;
     return true;
   }
 
-  for (std::size_t wing=0; wing<2; ++wing) {
-    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
-      wake_gamma_sum_[wing][panel] += bound_wake_gamma_[wing][panel];
-    }
+  for (std::size_t panel=0; panel<FULL_WAKE_SPAN_PANELS; ++panel) {
+    wake_gamma_sum_[panel] += bound_wake_gamma_[panel];
   }
   ++wake_sample_count_;
   if (wake_sample_count_ < param::WAKE_UPDATE_DECIMATION) {return false;}
@@ -602,19 +610,17 @@ bool MST::update_wake(const State& s) {
   const std::size_t new_valid_cells = std::min(wake_valid_cells_+1, param::WAKE_AGE_CELLS);
   const double inv_sample_count = 1.0/static_cast<double>(wake_sample_count_);
 
-  for (std::size_t wing=0; wing<2; ++wing) {
-    for (std::size_t age=new_valid_cells; age>0; --age) {
-      for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
-        wake_nodes_[wing][age][node] = wake_nodes_[wing][age-1][node] + convection;
-      }
+  for (std::size_t age=new_valid_cells; age>0; --age) {
+    for (std::size_t node=0; node<FULL_WAKE_SPAN_NODES; ++node) {
+      wake_nodes_[age][node] = wake_nodes_[age-1][node] + convection;
     }
-    wake_nodes_[wing][0] = trailing_edge_wake_nodes_[wing];
+  }
+  wake_nodes_[0] = trailing_edge_wake_nodes_;
 
-    for (std::size_t age=new_valid_cells-1; age>0; --age) {wake_gamma_[wing][age] = wake_gamma_[wing][age-1];}
-    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
-      wake_gamma_[wing][0][panel] = inv_sample_count*wake_gamma_sum_[wing][panel];
-      wake_gamma_sum_[wing][panel] = 0.0;
-    }
+  for (std::size_t age=new_valid_cells-1; age>0; --age) {wake_gamma_[age] = wake_gamma_[age-1];}
+  for (std::size_t panel=0; panel<FULL_WAKE_SPAN_PANELS; ++panel) {
+    wake_gamma_[0][panel] = inv_sample_count*wake_gamma_sum_[panel];
+    wake_gamma_sum_[panel] = 0.0;
   }
 
   wake_valid_cells_ = new_valid_cells;
@@ -672,50 +678,44 @@ void MST::update_tail_wake_velocity(const State& s) {
     }
   };
 
-  for (std::size_t wing=0; wing<2; ++wing) {
-    const std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& bound_nodes = bound_wake_nodes_[wing];
-    const std::array<Eigen::Vector3d, WAKE_SPAN_NODES>& trailing_edge_nodes = trailing_edge_wake_nodes_[wing];
-    const std::array<double, param::WAKE_SPAN_PANELS>& bound_gamma = bound_wake_gamma_[wing];
+  // Current full-span lattice. Only the two wing tips are free boundaries;
+  // the two root nodes share the center body-bridge panel.
+  for (std::size_t panel=0; panel<FULL_WAKE_SPAN_PANELS; ++panel) {
+    add_segment(bound_wake_nodes_[panel], bound_wake_nodes_[panel+1], bound_wake_gamma_[panel], CORE_RADIUS2);
+    add_segment(trailing_edge_wake_nodes_[panel], trailing_edge_wake_nodes_[panel+1], -bound_wake_gamma_[panel], CORE_RADIUS2);
+  }
+  for (std::size_t node=0; node<FULL_WAKE_SPAN_NODES; ++node) {
+    double gamma;
+    if (node == 0) {gamma = -bound_wake_gamma_[0];}
+    else if (node == FULL_WAKE_SPAN_PANELS) {gamma = bound_wake_gamma_.back();}
+    else {gamma = bound_wake_gamma_[node-1]-bound_wake_gamma_[node];}
+    add_segment(bound_wake_nodes_[node], trailing_edge_wake_nodes_[node], gamma, CORE_RADIUS2);
+  }
 
-    // Current bound lattice: quarter-chord, chordwise closure, and trailing edge.
-    for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
-      add_segment(bound_nodes[panel], bound_nodes[panel+1], bound_gamma[panel], CORE_RADIUS2);
-      add_segment(trailing_edge_nodes[panel], trailing_edge_nodes[panel+1], -bound_gamma[panel], CORE_RADIUS2);
-    }
-    for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
+  if (wake_valid_cells_ == 0) {return;}
+
+  // Spanwise edges shared by adjacent wake-age cells are evaluated once.
+  for (std::size_t age=0; age<=wake_valid_cells_; ++age) {
+    const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*static_cast<double>(age);
+    for (std::size_t panel=0; panel<FULL_WAKE_SPAN_PANELS; ++panel) {
       double gamma;
-      if (node == 0) {gamma = -bound_gamma[0];}
-      else if (node == param::WAKE_SPAN_PANELS) {gamma = bound_gamma.back();}
-      else {gamma = bound_gamma[node-1]-bound_gamma[node];}
-      add_segment(bound_nodes[node], trailing_edge_nodes[node], gamma, CORE_RADIUS2);
+      if (age == 0) {gamma = wake_gamma_[0][panel];}
+      else if (age == wake_valid_cells_) {gamma = -wake_gamma_[age-1][panel];}
+      else {gamma = wake_gamma_[age][panel]-wake_gamma_[age-1][panel];}
+      add_segment(wake_nodes_[age][panel], wake_nodes_[age][panel+1], gamma, core_radius2);
     }
+  }
 
-    if (wake_valid_cells_ == 0) {continue;}
-    const auto& wing_nodes = wake_nodes_[wing];
-    const auto& wing_gamma = wake_gamma_[wing];
-
-    // Spanwise edges shared by adjacent wake-age cells are evaluated once.
-    for (std::size_t age=0; age<=wake_valid_cells_; ++age) {
-      const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*static_cast<double>(age);
-      for (std::size_t panel=0; panel<param::WAKE_SPAN_PANELS; ++panel) {
-        double gamma;
-        if (age == 0) {gamma = wing_gamma[0][panel];}
-        else if (age == wake_valid_cells_) {gamma = -wing_gamma[age-1][panel];}
-        else {gamma = wing_gamma[age][panel]-wing_gamma[age-1][panel];}
-        add_segment(wing_nodes[age][panel], wing_nodes[age][panel+1], gamma, core_radius2);
-      }
-    }
-
-    // Streamwise edges retain only the net circulation of adjacent span panels.
-    for (std::size_t age=0; age<wake_valid_cells_; ++age) {
-      const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*(static_cast<double>(age)+0.5);
-      for (std::size_t node=0; node<WAKE_SPAN_NODES; ++node) {
-        double gamma;
-        if (node == 0) {gamma = -wing_gamma[age][0];}
-        else if (node == param::WAKE_SPAN_PANELS) {gamma = wing_gamma[age].back();}
-        else {gamma = wing_gamma[age][node-1]-wing_gamma[age][node];}
-        add_segment(wing_nodes[age][node], wing_nodes[age+1][node], gamma, core_radius2);
-      }
+  // Streamwise edges retain only the net circulation of adjacent full-span
+  // panels. At the two roots this is wing gamma minus bridge gamma.
+  for (std::size_t age=0; age<wake_valid_cells_; ++age) {
+    const double core_radius2 = CORE_RADIUS2 + CORE_GROWTH_PER_CELL*(static_cast<double>(age)+0.5);
+    for (std::size_t node=0; node<FULL_WAKE_SPAN_NODES; ++node) {
+      double gamma;
+      if (node == 0) {gamma = -wake_gamma_[age][0];}
+      else if (node == FULL_WAKE_SPAN_PANELS) {gamma = wake_gamma_[age].back();}
+      else {gamma = wake_gamma_[age][node-1]-wake_gamma_[age][node];}
+      add_segment(wake_nodes_[age][node], wake_nodes_[age+1][node], gamma, core_radius2);
     }
   }
 }

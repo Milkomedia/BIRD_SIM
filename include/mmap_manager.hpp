@@ -15,7 +15,7 @@ class MST;
 namespace bird_mmap {
 
 inline constexpr std::uint32_t LOG_HZ = 250;
-inline constexpr std::uint32_t LOG_SECONDS = 3;
+inline constexpr std::uint32_t LOG_SECONDS = 1;
 inline constexpr std::uint32_t CAPACITY = LOG_HZ * LOG_SECONDS;
 inline constexpr std::size_t NUM_JOINTS = param::NUM_JOINTS;
 inline constexpr std::size_t NUM_SEGMENTS = 8;
@@ -32,6 +32,7 @@ struct SampleData {
   std::uint64_t reset_epoch = 0;
 
   float state_pos[3]{};
+  float state_bpc[3]{};
   float state_vel[3]{};
   float state_R[9]{};
   float state_w[3]{};
