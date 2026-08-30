@@ -819,13 +819,14 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"flight.w.{axis}.cmd", time, channels["cmd.w"][:, axis]*RAD2DEG)
 
   def _update_wrench(self) -> None:
-    names = ("state.R", "segment.pos", "segment.force", "segment.torque", "body.ellipsoid_pos", "body.ellipsoid_force", "body.ellipsoid_torque")
+    names = ("state.R", "state.bpc", "segment.pos", "segment.force", "segment.torque", "body.ellipsoid_pos", "body.ellipsoid_force", "body.ellipsoid_torque")
     window_samples = max(1, int(round(FORCE_AVERAGE_WINDOW_SEC*self.header.log_hz)))
     preroll_samples = window_samples-1
     time, channels = self._data(names, preroll_samples=preroll_samples)
     if time.size == 0: return
     body_aero_force = np.sum(channels["segment.force"], axis=1)+channels["body.ellipsoid_force"]
     body_aero_moment = (np.sum(np.cross(channels["segment.pos"], channels["segment.force"])+channels["segment.torque"], axis=1) + np.cross(channels["body.ellipsoid_pos"], channels["body.ellipsoid_force"]) + channels["body.ellipsoid_torque"])
+    body_aero_moment -= np.cross(channels["state.bpc"], body_aero_force)
     world_aero_force = np.einsum("nij,nj->ni", channels["state.R"], body_aero_force)
     world_aero_moment = np.einsum("nij,nj->ni", channels["state.R"], body_aero_moment)
     world_aero_force_mean = trailing_mean(world_aero_force, window_samples)

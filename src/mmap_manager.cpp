@@ -30,6 +30,7 @@ static_assert(NUM_STRIPS == MST::NUM_STRIPS, "MST and mmap strip counts differ."
 
 #define BIRD_CHANNELS(X) \
   X("state.pos",                    "m",       "world NED", offsetof(SampleData, state_pos),                  3, 1) \
+  X("state.bpc",                    "m",       "body FRD",  offsetof(SampleData, state_bpc),                  3, 1) \
   X("state.vel",                    "m/s",     "world NED", offsetof(SampleData, state_vel),                  3, 1) \
   X("state.R",                      "1",       "FRD->NED",  offsetof(SampleData, state_R),                    3, 3) \
   X("state.w",                      "rad/s",   "body FRD",  offsetof(SampleData, state_w),                    3, 1) \
