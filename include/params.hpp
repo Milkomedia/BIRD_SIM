@@ -34,11 +34,13 @@ namespace param {
   inline constexpr std::size_t WAKE_AGE_CELLS = 32;         // 64 ms prescribed-wake history
   inline constexpr double WAKE_CORE_RADIUS = 0.010;         // [m], initial Scully vortex-core radius
 
-  inline constexpr std::array<double, NUM_JOINTS> INITIAL_DES_THETA{
+  inline constexpr std::array<double, NUM_JOINTS> INITIAL_DES_THETA { // [rad]
     0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
     0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.0, 0.0
+    0.0, -0.05
   };
+
+  inline constexpr double INITIAL_THETA_T = 0.35; // [rad]
 
   inline constexpr std::size_t NH   = 7;  // number of humerus strip frame
   inline constexpr std::size_t NR   = 6;  // number of radius strip frame

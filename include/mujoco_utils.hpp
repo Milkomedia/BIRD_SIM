@@ -35,7 +35,7 @@ namespace mj_utils {
   inline std::array<int, param::NUM_JOINTS> g_actuator_ids{};
   inline std::array<int, param::NUM_JOINTS> g_joint_qpos_adrs{};
   inline std::array<mjtNum, param::NUM_JOINTS> g_command_theta{};
-  inline mjtNum g_command_theta_t = 0.0;
+  inline mjtNum g_command_theta_t = param::INITIAL_THETA_T;
   inline mjtNum g_sim_speed = 1.0;
   inline mjtNum g_resume_sim_speed = 1.0;
 
@@ -53,6 +53,7 @@ namespace mj_utils {
   inline constexpr double AERO_FORCE_ARROW_WIDTH = 0.0035; // [m]
   inline constexpr double STRIP_FRAME_SCALE = 0.5;
   inline constexpr double STRIP_PLATE_THICKNESS = 0.001; // [m]
+  inline constexpr double COM_MARKER_RADIUS = 0.005; // [m]
 
   enum ArrowQuantity : int {
     ARROW_V = 0,
@@ -94,6 +95,7 @@ namespace mj_utils {
   inline constexpr std::array<float, 4> AERO_FORCE_ARROW_COLOR = {1.00f, 0.00f, 0.00f, 0.90f};
   inline constexpr std::array<float, 4> MANUS_FIRST_TRAIL_COLOR = {1.00f, 0.65f, 0.30f, 0.35f};
   inline constexpr std::array<float, 4> MANUS_LAST_TRAIL_COLOR = {0.45f, 0.85f, 1.00f, 0.35f};
+  inline constexpr std::array<float, 4> COM_MARKER_COLOR = {1.00f, 1.00f, 1.00f, 1.00f};
 
   class ManusTrajectory {
   public:
@@ -402,6 +404,23 @@ namespace mj_utils {
       geom.category = mjCAT_DECOR;
       ++g_scene.ngeom;
     }
+  }
+
+  inline void append_com_marker(const Eigen::Vector3d& world_com) {
+    if (!world_com.allFinite() || g_scene.ngeom >= g_scene.maxgeom) {return;}
+
+    const mjtNum size[3] = {static_cast<mjtNum>(COM_MARKER_RADIUS), static_cast<mjtNum>(COM_MARKER_RADIUS), static_cast<mjtNum>(COM_MARKER_RADIUS)};
+    const mjtNum pos[3] = {static_cast<mjtNum>(world_com(0)), static_cast<mjtNum>(world_com(1)), static_cast<mjtNum>(world_com(2))};
+    constexpr mjtNum mat[9] = {
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1
+    };
+
+    mjvGeom& geom = g_scene.geoms[g_scene.ngeom];
+    mjv_initGeom(&geom, mjGEOM_SPHERE, size, pos, mat, COM_MARKER_COLOR.data());
+    geom.category = mjCAT_DECOR;
+    ++g_scene.ngeom;
   }
 
   inline void append_arrow(const Eigen::Vector3d& origin, const Eigen::Vector3d& vector, const double arrow_scale, const double arrow_width, const std::array<float, 4>& color) {

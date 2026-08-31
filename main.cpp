@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
 
     if (mj_utils::g_reset_epoch != handled_viewer_reset_epoch) {
       mj_utils::g_command_theta = param::INITIAL_DES_THETA;
-      mj_utils::g_command_theta_t = 0.0;
+      mj_utils::g_command_theta_t = param::INITIAL_THETA_T;
       mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);
       handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
     }
@@ -517,6 +517,8 @@ int main(int argc, char** argv) {
     GTb.block<3, 3>(0, 0) = param::NED_TO_FLU * copied_state.R;
     GTb.block<3, 1>(0, 3) = param::NED_TO_FLU * copied_state.pos;
     mj_utils::append_frame(GTb);
+    const Eigen::Vector3d Gpc = GTb.block<3, 1>(0, 3) + GTb.block<3, 3>(0, 0) * copied_state.bpc;
+    mj_utils::append_com_marker(Gpc);
     for (const Eigen::Matrix4d& bTj : copied_state.bTj) {mj_utils::append_frame(GTb * bTj);}
     mj_utils::g_manus_trajectory.render(static_cast<double>(render_data->time), copied_strip_state.p_m, GTb);
 
