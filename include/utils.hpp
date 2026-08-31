@@ -167,6 +167,25 @@ inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<E
       }
     }
 
+    #if mjVERSION_HEADER >= 3011000
+    // MuJoCo >= 3.11: inertia matrix is stored directly in lower-triangular CSR.
+    for (int row=0; row<nv; ++row) {
+      const int row_adr = m->M_rowadr[row];
+      const int row_nnz = m->M_rownnz[row];
+
+      for (int k=0; k<row_nnz; ++k) {
+        const int address = row_adr + k;
+        const int col = m->M_colind[address];
+
+        mjtNum value = 0;
+        for (int j=0; j<6; ++j) {
+          value += jac[j*nv+row]*inertia_jac[j*nv+col];
+        }
+        d->M[address] += value;
+      }
+    }
+    #else
+    // MuJoCo <= 3.10: legacy tree-sparse qM layout.
     for (int row=0; row<nv; ++row) {
       int address = m->dof_Madr[row];
       int col = row;
@@ -177,6 +196,7 @@ inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<E
         col = m->dof_parentid[col];
       }
     }
+    #endif
   }
 
   mj_factorM(m, d);

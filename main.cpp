@@ -213,9 +213,9 @@ int main(int argc, char** argv) {
         constexpr double DEG_TO_RAD = M_PI / 180.0;
 
         // TUNING PARAMETERS
-        constexpr double R1 = 0.35;
-        constexpr double R2 = 0.25;
-        constexpr double MAX_FLAPPING_FREQUENCY = 3.0; // [Hz]
+        constexpr double R1 = 0.45;
+        constexpr double R2 = 0.35;
+        constexpr double MAX_FLAPPING_FREQUENCY = 6.0; // [Hz]
 
         constexpr double MAX_SWEEP_AMPLITUDE = 10.0 * DEG_TO_RAD;
         constexpr double SWEEP_OFFSET = 7.5 * DEG_TO_RAD;
@@ -258,10 +258,10 @@ int main(int argc, char** argv) {
           const double pitching_cycle_ratio = std::fmod(cycle_ratio - PITCH_PHASE_OFFSET + 1.0, 1.0);
           const double folding_cycle_ratio = std::fmod(cycle_ratio - FOLD_PHASE_OFFSET + 1.0, 1.0);
           
-          // double pitching = pitching_offset;
-          // if (pitching_cycle_ratio >= R2) {pitching = pitching_offset + 0.5 * pitching_amplitude * (1.0 - std::cos(TWO_PI * (pitching_cycle_ratio - R2) / (1.0 - R2)));}
           double pitching = pitching_offset;
-          if (pitching_cycle_ratio <= R1) {pitching = pitching_offset + pitching_amplitude * std::sin(M_PI * cycle_ratio / R1);}
+          if (pitching_cycle_ratio >= R2) {pitching = pitching_offset + 0.5 * pitching_amplitude * (1.0 - std::cos(TWO_PI * (pitching_cycle_ratio - R2) / (1.0 - R2)));}
+          // double pitching = pitching_offset;
+          // if (pitching_cycle_ratio <= R1) {pitching = pitching_offset + pitching_amplitude * std::sin(M_PI * cycle_ratio / R1);}
 
           double folding = FOLDING_OFFSET;
           if (folding_cycle_ratio >= R2) {folding = FOLDING_OFFSET + 0.5 * folding_amplitude * (1.0 - std::cos(TWO_PI * (folding_cycle_ratio - R2) / (1.0 - R2)));}
