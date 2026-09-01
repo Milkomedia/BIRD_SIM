@@ -1,3 +1,5 @@
+(GPT generated Readme)
+
 # BIRD_SIM
 
 Real-time MuJoCo-based simulation framework for bird-like flapping-wing aerial vehicles.
