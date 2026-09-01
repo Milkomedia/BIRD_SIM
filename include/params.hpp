@@ -13,6 +13,22 @@ namespace param {
   inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(20);
   inline constexpr double SIM_DT_SEC = std::chrono::duration<double>(SIM_DT_US).count();
 
+  // ----- Flapping Motion Parameters -----
+  inline constexpr double R1 = 0.45;
+  inline constexpr double R2 = 0.35;
+  inline constexpr double FLAPPING_DELTA_0  = -3.00 * M_PI / 180.0; // [rad]
+  inline constexpr double PITCHING_DELTA_0  =  6.75 * M_PI / 180.0; // [rad]
+  inline constexpr double FOLDING_DELTA_0   =  5.00 * M_PI / 180.0; // [rad]
+  inline constexpr double SWEEP_AMPLITUDE   =  10.0 * M_PI / 180.0; // [rad]
+  inline constexpr double FOLDING_AMPLITUDE =  22.5 * M_PI / 180.0; // [rad]
+
+  constexpr double MAX_FREQ = 6.0; // [Hz]
+  constexpr double MAX_FLAPPING_AMPLITUDE  = M_PI / 2.0; // max mean flapping amplitude [rad]
+  constexpr double MAX_FLAPPING_DIFFERENCE = M_PI / 4.0; // max flapping amplitude difference [rad]
+  constexpr double MAX_PITCHING_AMPLITUDE  = M_PI / 4.0; // max mean pitching amplitude [rad]
+  constexpr double MAX_PITCHING_DIFFERENCE = M_PI / 8.0; // max pitching amplitude difference [rad]
+  constexpr double MAX_SWEEP_BIAS = M_PI / 4.0; // max sweep bias [rad]
+
   // ----- model topology -----
   inline constexpr std::size_t NUM_WING_JOINTS_PER_WING = 6;
   inline constexpr std::size_t NUM_WING_JOINTS = 2 * NUM_WING_JOINTS_PER_WING;
@@ -24,23 +40,15 @@ namespace param {
   inline const Eigen::Vector3d ELLIPSOID_CENTER_POS = Eigen::Vector3d(-0.084, 0.0, 0.0); // [m], body FRD
   inline const Eigen::Vector3d ELLIPSOID_SIZE = Eigen::Vector3d(0.156, 0.06, 0.06);       // [m], semi-axes x,y,z
 
-  // ----- MST -----
-  inline constexpr double AIR_DENSITY = 1.225;               // [kg/m^3]
-  inline constexpr double AIR_KINEMATIC_VISCOSITY = 1.5e-5;  // [m^2/s]
-
   // ----- wing wake to tail -----
   inline constexpr std::size_t WAKE_UPDATE_DECIMATION = 10; // 500 Hz at the current simulation rate
   inline constexpr std::size_t WAKE_SPAN_PANELS = 12;       // 2 humerus + 2 radius + 8 manus
   inline constexpr std::size_t WAKE_AGE_CELLS = 32;         // 64 ms prescribed-wake history
   inline constexpr double WAKE_CORE_RADIUS = 0.010;         // [m], initial Scully vortex-core radius
 
-  inline constexpr std::array<double, NUM_JOINTS> INITIAL_DES_THETA { // [rad]
-    0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
-    0.0, -0.05
-  };
-
-  inline constexpr double INITIAL_THETA_T = 0.35; // [rad]
+  // ----- MST -----
+  inline constexpr double AIR_DENSITY = 1.225;               // [kg/m^3]
+  inline constexpr double AIR_KINEMATIC_VISCOSITY = 1.5e-5;  // [m^2/s]
 
   inline constexpr std::size_t NH   = 7;  // number of humerus strip frame
   inline constexpr std::size_t NR   = 6;  // number of radius strip frame
@@ -73,6 +81,15 @@ namespace param {
   inline constexpr double DL_R  = (C_M0  - C_R0) / static_cast<double>(NR-1); // change in chord length at radius strip [m]
   inline constexpr double DL_M1 = (C_MK  - C_M0) / static_cast<double>(DECLINE_IDX_K-1); // change in chord length at manus strip [m]
   inline constexpr double DL_M2 = (C_MNM - C_MK) / static_cast<double>(NM-DECLINE_IDX_K-1); // change in chord length at manus strip [m]
+
+  // ----- Kinematics Parameters -----
+  inline constexpr std::array<double, NUM_JOINTS> INITIAL_DES_THETA { // [rad]
+    0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.125, -0.28, 0.1963495408, -0.7072074129, 0.19, 0.5173155903,
+    0.0, -0.05
+  };
+
+  inline constexpr double INITIAL_THETA_T = 0.35; // [rad]
 
   inline const std::array<Eigen::Matrix4d, 8> J_T_S0 = {
     // Right Wing

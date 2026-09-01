@@ -68,7 +68,7 @@ private:
 };
 
 /*
-*ch[0]  : yaw.  [172, 1810] left,right
+*ch[0]  : yaw   [172, 1810] left,right
 *ch[1]  : pitch [172, 1810] down, up
 *ch[2]  : z     [172, 1810] down, up
 *ch[3]  : roll  [172, 1810] left,right

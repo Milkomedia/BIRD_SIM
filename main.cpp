@@ -205,97 +205,51 @@ int main(int argc, char** argv) {
       // --- ELRS RC command ---
       if (elrs_enabled) {
         (void)elrs.update(elrs_channels);
+ 
+        // ELRS MIN = 172, MAX = 1810.
+        const double f = param::MAX_FREQ * static_cast<double>(elrs_channels[10]- 172) / 1638.0; // flapping_frequency
+        const double Af_bar = param::MAX_FLAPPING_AMPLITUDE * static_cast<double>(elrs_channels[2]- 172) / 1638.0; // mean_flapping_amplitude
+        const double Af_delta = param::MAX_FLAPPING_DIFFERENCE * (static_cast<double>(elrs_channels[0]) - 992.0) / (elrs_channels[0] < 992 ? 820.0 : 818.0); // flapping_difference
+        const double Ap_bar = param::MAX_PITCHING_AMPLITUDE * static_cast<double>(elrs_channels[1]- 172) / 1638.0; // pitching_amplitude
+        const double Ap_delta = param::MAX_PITCHING_DIFFERENCE * (static_cast<double>(elrs_channels[3]) - 992.0) / (elrs_channels[3] < 992 ? 820.0 : 818.0); // pitching_difference
+        const double sweep_delta0 = param::MAX_SWEEP_BIAS * (static_cast<double>(elrs_channels[11]) - 992.0) / (elrs_channels[11] < 992 ? 820.0 : 818.0); // sweep_bias        
 
-        constexpr double ELRS_MIN = 172.0;
-        constexpr double ELRS_CENTER = 992.0;
-        constexpr double ELRS_MAX = 1810.0;
-        constexpr double TWO_PI = 2.0 * M_PI;
-        constexpr double DEG_TO_RAD = M_PI / 180.0;
+        const double cycle_ratio = flapping_phase / (2.0 * M_PI);
+        double cosR1; double sinR1;
+        if (cycle_ratio < param::R1) {cosR1 = -std::cos(M_PI * cycle_ratio / param::R1); sinR1 = std::sin(M_PI * cycle_ratio / param::R1);}
+        else{cosR1 = std::cos(M_PI * (cycle_ratio - param::R1) / (1.0 - param::R1)); sinR1 = std::sin(M_PI * (param::R1 - cycle_ratio) / (1.0 - param::R1));}
+        double one_minus_cosR2 = 0.0;
+        if (cycle_ratio > param::R2) {one_minus_cosR2 = 1.0 - std::cos(2.0 * M_PI * (cycle_ratio - param::R2) / (1.0 - param::R2));}
 
-        // TUNING PARAMETERS
-        constexpr double R1 = 0.45;
-        constexpr double R2 = 0.35;
-        constexpr double MAX_FLAPPING_FREQUENCY = 6.0; // [Hz]
+        const double flapping_right = param::FLAPPING_DELTA_0 + (Af_bar + 0.5*Af_delta) * cosR1;
+        const double flapping_left  = param::FLAPPING_DELTA_0 + (Af_bar - 0.5*Af_delta) * cosR1;
+        const double pitching_right = param::PITCHING_DELTA_0 + 0.5 * (Ap_bar + 0.5*Ap_delta) * one_minus_cosR2;
+        const double pitching_left  = param::PITCHING_DELTA_0 + 0.5 * (Ap_bar - 0.5*Ap_delta) * one_minus_cosR2;
+        const double sweep   = sweep_delta0 + param::SWEEP_AMPLITUDE * sinR1;
+        const double folding = param::FOLDING_DELTA_0 + 0.5 * param::FOLDING_AMPLITUDE * one_minus_cosR2;
 
-        constexpr double MAX_SWEEP_AMPLITUDE = 10.0 * DEG_TO_RAD;
-        constexpr double SWEEP_OFFSET = 7.5 * DEG_TO_RAD;
+        cmd.theta[0] = param::INITIAL_DES_THETA[0] + flapping_right;
+        cmd.theta[1] = param::INITIAL_DES_THETA[1] + pitching_right;
+        cmd.theta[2] = param::INITIAL_DES_THETA[2] + sweep;
+        cmd.theta[3] = param::INITIAL_DES_THETA[3] + folding;
+        cmd.theta[4] = J5_model(cmd.theta[2]);
+        cmd.theta[5] = param::INITIAL_DES_THETA[5] - 2.0 * folding;
 
-        constexpr double MAX_FLAPPING_AMPLITUDE = 45.0 * DEG_TO_RAD;
-        constexpr double MAX_FOLDING_ANGLE = 50.0 * DEG_TO_RAD;
-        constexpr double MAX_PITCHING_ANGLE = 30.0 * DEG_TO_RAD;
+        cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping_left;
+        cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching_left;
+        cmd.theta[8]  = param::INITIAL_DES_THETA[8] + sweep;
+        cmd.theta[9]  = param::INITIAL_DES_THETA[9] + folding;
+        cmd.theta[10] = J5_model(cmd.theta[8]);
+        cmd.theta[11] = param::INITIAL_DES_THETA[11] - 2.0 * folding;
 
-        constexpr double MAX_FLAPPING_OFFSET = 30.0 * DEG_TO_RAD;
-        constexpr double MAX_PITCHING_OFFSET = 15.0 * DEG_TO_RAD;
-        constexpr double FOLDING_OFFSET = 5.0 * DEG_TO_RAD;
+        for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
 
-        constexpr double PITCH_PHASE_OFFSET = 0.0; // Positive values delay the original trajectory without changing its shape or duration.
-        constexpr double FOLD_PHASE_OFFSET = 0.0;
-
-        { // CRSF to joint command
-          const double pitching_channel = static_cast<double>(elrs_channels[1]);
-          const double flapping_channel = static_cast<double>(elrs_channels[11]);
-          const double folding_channel = static_cast<double>(elrs_channels[10]);
-          const double frequency_channel = static_cast<double>(elrs_channels[2]);
-          const double flapping_offset_channel = static_cast<double>(elrs_channels[14]);
-          const double pitching_offset_channel = static_cast<double>(elrs_channels[15]);
-
-          const double flapping_amplitude = MAX_FLAPPING_AMPLITUDE * (flapping_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
-          const double folding_amplitude = MAX_FOLDING_ANGLE * (folding_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
-          const double pitching_amplitude = pitching_channel < ELRS_CENTER ? MAX_PITCHING_ANGLE * (pitching_channel - ELRS_CENTER) / (ELRS_CENTER - ELRS_MIN) : MAX_PITCHING_ANGLE * (pitching_channel - ELRS_CENTER) / (ELRS_MAX - ELRS_CENTER);
-
-          const double flapping_offset = flapping_offset_channel < ELRS_CENTER ? MAX_FLAPPING_OFFSET * (flapping_offset_channel - ELRS_CENTER) / (ELRS_CENTER - ELRS_MIN) : MAX_FLAPPING_OFFSET * (flapping_offset_channel - ELRS_CENTER) / (ELRS_MAX - ELRS_CENTER);
-          const double pitching_offset = pitching_offset_channel < ELRS_CENTER ? MAX_PITCHING_OFFSET * (pitching_offset_channel - ELRS_CENTER) / (ELRS_CENTER - ELRS_MIN) : MAX_PITCHING_OFFSET * (pitching_offset_channel - ELRS_CENTER) / (ELRS_MAX - ELRS_CENTER);
-
-          const double flapping_frequency = MAX_FLAPPING_FREQUENCY * (frequency_channel - ELRS_MIN) / (ELRS_MAX - ELRS_MIN);
-          const double cycle_ratio = flapping_phase / TWO_PI;
-
-          // 1. Asymmetric flapping motion.
-          double flapping_delta;
-          if (cycle_ratio < R1) {flapping_delta = flapping_offset - flapping_amplitude * std::cos(M_PI * cycle_ratio / R1);}
-          else {flapping_delta = flapping_offset + flapping_amplitude * std::cos(M_PI * (cycle_ratio - R1) / (1.0 - R1));}
-
-          // 2. Original pitch and folding trajectories with independent phase shifts.
-          const double pitching_cycle_ratio = std::fmod(cycle_ratio - PITCH_PHASE_OFFSET + 1.0, 1.0);
-          const double folding_cycle_ratio = std::fmod(cycle_ratio - FOLD_PHASE_OFFSET + 1.0, 1.0);
-          
-          double pitching = pitching_offset;
-          if (pitching_cycle_ratio >= R2) {pitching = pitching_offset + 0.5 * pitching_amplitude * (1.0 - std::cos(TWO_PI * (pitching_cycle_ratio - R2) / (1.0 - R2)));}
-          // double pitching = pitching_offset;
-          // if (pitching_cycle_ratio <= R1) {pitching = pitching_offset + pitching_amplitude * std::sin(M_PI * cycle_ratio / R1);}
-
-          double folding = FOLDING_OFFSET;
-          if (folding_cycle_ratio >= R2) {folding = FOLDING_OFFSET + 0.5 * folding_amplitude * (1.0 - std::cos(TWO_PI * (folding_cycle_ratio - R2) / (1.0 - R2)));}
-
-          // 3. Sweep
-          double sweep_delta;
-          if (cycle_ratio < R1) {sweep_delta = - SWEEP_OFFSET + MAX_SWEEP_AMPLITUDE * std::sin(M_PI * cycle_ratio / R1);}
-          else {sweep_delta = - SWEEP_OFFSET + MAX_SWEEP_AMPLITUDE * std::sin(M_PI * (R1 - cycle_ratio) / (1.0 - R1));}
-
-          cmd.theta[0] = param::INITIAL_DES_THETA[0] + flapping_delta;
-          cmd.theta[1] = param::INITIAL_DES_THETA[1] + pitching;
-          cmd.theta[2] = param::INITIAL_DES_THETA[2] + sweep_delta;
-          cmd.theta[3] = param::INITIAL_DES_THETA[3] + 1.8 * folding;
-          cmd.theta[4] = J5_model(cmd.theta[2]);
-          cmd.theta[5] = param::INITIAL_DES_THETA[5] - 3.5 * folding;
-
-          cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping_delta;
-          cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching;
-          cmd.theta[8]  = param::INITIAL_DES_THETA[8] + sweep_delta;
-          cmd.theta[9]  = param::INITIAL_DES_THETA[9] + 1.8 * folding;
-          cmd.theta[10] = J5_model(cmd.theta[8]);
-          cmd.theta[11] = param::INITIAL_DES_THETA[11] - 3.5 * folding;
-
-          for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
-
-          if (advance_sim) {
-            flapping_phase += TWO_PI * flapping_frequency * param::SIM_DT_SEC;
-            if (flapping_phase >= TWO_PI) {flapping_phase -= TWO_PI;}
-          }
+        if (advance_sim) {
+          flapping_phase += 2.0 * M_PI * f * param::SIM_DT_SEC;
+          if (flapping_phase >= 2.0 * M_PI) {flapping_phase -= 2.0 * M_PI;}
         }
       }
-      if (!elrs_enabled) {
-        for(std::size_t i=0; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
-      }
+      if (!elrs_enabled) {for(std::size_t i=0; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}}
 
       s.vel_f = Eigen::Vector3d(-8.0, 0.0, 0.0);
       cmd.theta_t = static_cast<double>(viewer_data.theta_t);
