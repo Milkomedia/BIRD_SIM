@@ -20,6 +20,7 @@ add_executable(
   src/Servo.cpp
   src/ELRS.cpp
   src/MST.cpp
+  src/Mixer.cpp
   src/mmap_manager.cpp
 )
 

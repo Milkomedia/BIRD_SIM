@@ -28,10 +28,16 @@ struct State {
 };
 
 struct Command {
+  // Flight control
   Eigen::Vector3d pos   = Eigen::Vector3d::Zero();     // [m]
   Eigen::Vector3d vel   = Eigen::Vector3d::Zero();     // [m/s]
   Eigen::Matrix3d R     = Eigen::Matrix3d::Identity(); // [SO3]
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();     // [rad/s]
+
+  // Desired control input. order : [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep]
+  Eigen::Matrix<double, 6, 1> u = Eigen::Matrix<double, 6, 1>::Zero();
+
+  // Joint control
   std::array<double, param::NUM_JOINTS> theta{};       // [rad]
   double theta_t = 0.0;                                // [rad]
 };
@@ -131,10 +137,7 @@ static inline void FK(const std::array<double, param::NUM_JOINTS>& theta, std::a
   }
 }
 
-static inline double J5_model(const double J3) {
-  // return 0.18702 + 0.308759 * J3 - 0.0707378 / (J3 + 1.05901);
-  return -0.1356*J3*J3*J3 - 0.2059*J3*J3 + 0.1409*J3 + 0.1719;
-}
+static inline double J5_model(const double J3) {return -0.1356*J3*J3*J3 - 0.2059*J3*J3 + 0.1409*J3 + 0.1719;}
 
 template <std::size_t N>
 inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<Eigen::Vector3d, N>& local_positions, const std::array<Eigen::Matrix<double, 6, 6>, N>& local_spatial_inertias, const std::array<int, N>& body_ids, const Eigen::Matrix3d& world_R_body, const Eigen::Vector3d& world_p_body, mjtNum* jac, mjtNum* inertia_jac) {

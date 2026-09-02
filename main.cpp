@@ -1,6 +1,7 @@
 #include "mujoco_utils.hpp"
 #include "params.hpp"
 #include "MST.hpp"
+#include "Mixer.hpp"
 #include "utils.hpp"
 #include "Servo.hpp"
 #include "ELRS.hpp"
@@ -135,10 +136,14 @@ int main(int argc, char** argv) {
     for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {servo.emplace_back(motor_parameters[param::MOTOR_MODEL_INDEX[i]]);}
 
     MST mst{};
+    Mixer mixer{};
     bird_mmap::MMapLogger mmap_logger{};
     mmap_logger.open();
     State s{};
     Command cmd{};
+    cmd.theta = param::INITIAL_DES_THETA;
+    std::array<double, param::NUM_JOINTS> elrs_theta = param::INITIAL_DES_THETA;
+    double elrs_flapping_phase = 0.0;
     ViewerData viewer_data = initial_viewer_data;
     std::vector<mjtNum> snapshot_qpos(static_cast<std::size_t>(m->nq));
     std::vector<mjtNum> snapshot_qvel(static_cast<std::size_t>(m->nv));
@@ -152,7 +157,7 @@ int main(int argc, char** argv) {
     std::uint64_t handled_reset_epoch = viewer_data.reset_epoch;
     std::uint64_t sim_step = 0;
     double sim_step_credit = 0.0;
-    double flapping_phase = 0.0;
+    bool manual_mode = false;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -175,6 +180,7 @@ int main(int argc, char** argv) {
         mj_forward(m, sim_data);
         for (Actuator::Servo& item : servo) {item.reset();}
         mst.reset();
+        mixer.reset();
         mj_utils::g_manus_trajectory.reset();
         applied_aero_pos.fill(Eigen::Vector3d::Zero());
         applied_aero_force.fill(Eigen::Vector3d::Zero());
@@ -182,7 +188,7 @@ int main(int argc, char** argv) {
         damping_torque.fill(0.0);
         sim_step = 0;
         sim_step_credit = 0.0;
-        flapping_phase = 0.0;
+        elrs_flapping_phase = 0.0;
         handled_reset_epoch = viewer_data.reset_epoch;
       }
 
@@ -205,48 +211,46 @@ int main(int argc, char** argv) {
       // --- ELRS RC command ---
       if (elrs_enabled) {
         (void)elrs.update(elrs_channels);
- 
-        // ELRS MIN = 172, MAX = 1810.
-        const double f = param::MAX_FREQ * static_cast<double>(elrs_channels[10]- 172) / 1638.0; // flapping_frequency
-        const double Af_bar = param::MAX_FLAPPING_AMPLITUDE * static_cast<double>(elrs_channels[2]- 172) / 1638.0; // mean_flapping_amplitude
-        const double Af_delta = param::MAX_FLAPPING_DIFFERENCE * (static_cast<double>(elrs_channels[0]) - 992.0) / (elrs_channels[0] < 992 ? 820.0 : 818.0); // flapping_difference
-        const double Ap_bar = param::MAX_PITCHING_AMPLITUDE * static_cast<double>(elrs_channels[1]- 172) / 1638.0; // pitching_amplitude
-        const double Ap_delta = param::MAX_PITCHING_DIFFERENCE * (static_cast<double>(elrs_channels[3]) - 992.0) / (elrs_channels[3] < 992 ? 820.0 : 818.0); // pitching_difference
-        const double sweep_delta0 = param::MAX_SWEEP_BIAS * (static_cast<double>(elrs_channels[11]) - 992.0) / (elrs_channels[11] < 992 ? 820.0 : 818.0); // sweep_bias        
 
-        const double cycle_ratio = flapping_phase / (2.0 * M_PI);
-        double cosR1; double sinR1;
-        if (cycle_ratio < param::R1) {cosR1 = -std::cos(M_PI * cycle_ratio / param::R1); sinR1 = std::sin(M_PI * cycle_ratio / param::R1);}
-        else{cosR1 = std::cos(M_PI * (cycle_ratio - param::R1) / (1.0 - param::R1)); sinR1 = std::sin(M_PI * (param::R1 - cycle_ratio) / (1.0 - param::R1));}
-        double one_minus_cosR2 = 0.0;
-        if (cycle_ratio > param::R2) {one_minus_cosR2 = 1.0 - std::cos(2.0 * M_PI * (cycle_ratio - param::R2) / (1.0 - param::R2));}
+        manual_mode = (elrs_channels[5] == 1810);
+        if (manual_mode) {
+          // ELRS MIN = 172, MAX = 1810.
+          cmd.u(0) = param::MAX_FREQ * static_cast<double>(elrs_channels[10]- 172) / 1638.0; // flapping_frequency
+          cmd.u(1) = param::MAX_FLAPPING_AMPLITUDE * static_cast<double>(elrs_channels[2]- 172) / 1638.0; // mean_flapping_amplitude
+          cmd.u(2) = param::MAX_FLAPPING_DIFFERENCE * (static_cast<double>(elrs_channels[0]) - 992.0) / (elrs_channels[0] < 992 ? 820.0 : 818.0); // flapping_difference
+          cmd.u(3) = param::MAX_PITCHING_AMPLITUDE * static_cast<double>(elrs_channels[1]- 172) / 1638.0; // pitching_amplitude
+          cmd.u(4) = param::MAX_PITCHING_DIFFERENCE * (static_cast<double>(elrs_channels[3]) - 992.0) / (elrs_channels[3] < 992 ? 820.0 : 818.0); // pitching_difference
+          cmd.u(5) = param::MAX_SWEEP_BIAS * (static_cast<double>(elrs_channels[11]) - 992.0) / (elrs_channels[11] < 992 ? 820.0 : 818.0); // sweep_bias
 
-        const double flapping_right = param::FLAPPING_DELTA_0 + (Af_bar + 0.5*Af_delta) * cosR1;
-        const double flapping_left  = param::FLAPPING_DELTA_0 + (Af_bar - 0.5*Af_delta) * cosR1;
-        const double pitching_right = param::PITCHING_DELTA_0 + 0.5 * (Ap_bar + 0.5*Ap_delta) * one_minus_cosR2;
-        const double pitching_left  = param::PITCHING_DELTA_0 + 0.5 * (Ap_bar - 0.5*Ap_delta) * one_minus_cosR2;
-        const double sweep   = sweep_delta0 + param::SWEEP_AMPLITUDE * sinR1;
-        const double folding = param::FOLDING_DELTA_0 + 0.5 * param::FOLDING_AMPLITUDE * one_minus_cosR2;
+          const double cycle_ratio = elrs_flapping_phase / (2.0 * M_PI);
+          double cosR1; double sinR1;
+          if (cycle_ratio < param::R1) {cosR1 = -std::cos(M_PI * cycle_ratio / param::R1); sinR1 = std::sin(M_PI * cycle_ratio / param::R1);}
+          else{cosR1 = std::cos(M_PI * (cycle_ratio - param::R1) / (1.0 - param::R1)); sinR1 = std::sin(M_PI * (param::R1 - cycle_ratio) / (1.0 - param::R1));}
+          double one_minus_cosR2 = 0.0;
+          if (cycle_ratio > param::R2) {one_minus_cosR2 = 1.0 - std::cos(2.0 * M_PI * (cycle_ratio - param::R2) / (1.0 - param::R2));}
 
-        cmd.theta[0] = param::INITIAL_DES_THETA[0] + flapping_right;
-        cmd.theta[1] = param::INITIAL_DES_THETA[1] + pitching_right;
-        cmd.theta[2] = param::INITIAL_DES_THETA[2] + sweep;
-        cmd.theta[3] = param::INITIAL_DES_THETA[3] + folding;
-        cmd.theta[4] = J5_model(cmd.theta[2]);
-        cmd.theta[5] = param::INITIAL_DES_THETA[5] - 2.0 * folding;
+          const double flapping_right = param::FLAPPING_DELTA_0 + (cmd.u(1) + 0.5*cmd.u(2)) * cosR1;
+          const double flapping_left  = param::FLAPPING_DELTA_0 + (cmd.u(1) - 0.5*cmd.u(2)) * cosR1;
+          const double pitching_right = param::PITCHING_DELTA_0 + 0.5 * (cmd.u(3) + 0.5*cmd.u(4)) * one_minus_cosR2;
+          const double pitching_left  = param::PITCHING_DELTA_0 + 0.5 * (cmd.u(3) - 0.5*cmd.u(4)) * one_minus_cosR2;
+          const double sweep   = cmd.u(5) + param::SWEEP_AMPLITUDE * sinR1;
+          const double folding = param::FOLDING_DELTA_0 + 0.5 * param::FOLDING_AMPLITUDE * one_minus_cosR2;
 
-        cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping_left;
-        cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching_left;
-        cmd.theta[8]  = param::INITIAL_DES_THETA[8] + sweep;
-        cmd.theta[9]  = param::INITIAL_DES_THETA[9] + folding;
-        cmd.theta[10] = J5_model(cmd.theta[8]);
-        cmd.theta[11] = param::INITIAL_DES_THETA[11] - 2.0 * folding;
+          elrs_theta[0] = param::INITIAL_DES_THETA[0] + flapping_right;
+          elrs_theta[1] = param::INITIAL_DES_THETA[1] + pitching_right;
+          elrs_theta[2] = param::INITIAL_DES_THETA[2] + sweep;
+          elrs_theta[3] = param::INITIAL_DES_THETA[3] + folding;
+          elrs_theta[4] = J5_model(elrs_theta[2]);
+          elrs_theta[5] = param::INITIAL_DES_THETA[5] - 2.0 * folding;
 
-        for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
+          elrs_theta[6]  = param::INITIAL_DES_THETA[6] + flapping_left;
+          elrs_theta[7]  = param::INITIAL_DES_THETA[7] + pitching_left;
+          elrs_theta[8]  = param::INITIAL_DES_THETA[8] + sweep;
+          elrs_theta[9]  = param::INITIAL_DES_THETA[9] + folding;
+          elrs_theta[10] = J5_model(elrs_theta[8]);
+          elrs_theta[11] = param::INITIAL_DES_THETA[11] - 2.0 * folding;
 
-        if (advance_sim) {
-          flapping_phase += 2.0 * M_PI * f * param::SIM_DT_SEC;
-          if (flapping_phase >= 2.0 * M_PI) {flapping_phase -= 2.0 * M_PI;}
+          for (std::size_t i=param::NUM_WING_JOINTS; i<param::NUM_JOINTS; ++i) {elrs_theta[i] = static_cast<double>(viewer_data.theta_d[i]);}
         }
       }
       if (!elrs_enabled) {for(std::size_t i=0; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}}
@@ -285,6 +289,27 @@ int main(int argc, char** argv) {
             }
           }
 
+          FK(s.theta, s.bTj);
+
+          // --- Control allocation ---
+          const Eigen::Matrix<double, 6, 1>& estimated_wrench = mixer.update(s.R.transpose()*(s.vel_f-s.vel), s.bpc, cmd.u);
+          // Future automatic control-allocation and joint-trajectory logic goes here.
+
+          // Manual mode has final authority over any automatic joint command.
+          if (manual_mode) {cmd.theta = elrs_theta;}
+
+          elrs_flapping_phase += 2.0 * M_PI * cmd.u(0) * param::SIM_DT_SEC;
+          if (elrs_flapping_phase >= 2.0 * M_PI) {elrs_flapping_phase -= 2.0 * M_PI;}
+
+          constexpr std::uint64_t MIXER_PRINT_DECIMATION = 500; // 10 Hz at 5 kHz simulation rate
+          if ((sim_step+1) % MIXER_PRINT_DECIMATION == 0) {
+            std::printf(
+              "[Mixer] mean F=[%.6g %.6g %.6g],  M=[%.6g %.6g %.6g]\n",
+              estimated_wrench(0), estimated_wrench(1), estimated_wrench(2),
+              estimated_wrench(3), estimated_wrench(4), estimated_wrench(5)
+            );
+          }
+
           // Servo is simulator-agnostic: feed it only the joint state.
           for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
             servo[i].desired_rad = cmd.theta[i];
@@ -292,7 +317,6 @@ int main(int argc, char** argv) {
             sim_data->ctrl[mj_utils::g_actuator_ids[i]] = static_cast<mjtNum>(servo[i].motor_state.torque);
           }
 
-          FK(s.theta, s.bTj);
           mst.update_dynamics(s, cmd.theta_t, log_due);
 
           const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
