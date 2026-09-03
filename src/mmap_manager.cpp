@@ -210,7 +210,7 @@ void MMapLogger::close() {
   map_size_ = 0;
 }
 
-void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
+void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
   if (!base_) {open();}
 
   const std::uint64_t write_count = atomic_load(&header_->write_count);

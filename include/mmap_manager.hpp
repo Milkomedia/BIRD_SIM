@@ -8,7 +8,7 @@
 #include <string>
 #include <type_traits>
 
-struct State;
+struct SimState;
 struct Command;
 class MST;
 
@@ -149,7 +149,7 @@ public:
 
   void open();
   void close();
-  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, const State& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
+  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
 
 private:
   std::string path_;

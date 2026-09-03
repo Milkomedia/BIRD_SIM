@@ -13,18 +13,14 @@
 
 struct State {
   Eigen::Vector3d pos   = Eigen::Vector3d::Zero();       // [m], body origin, world NED
-  Eigen::Vector3d bpc   = Eigen::Vector3d::Zero();       // [m], body origin -> system CoM, body FRD
   Eigen::Vector3d vel   = Eigen::Vector3d::Zero();       // [m/s], body origin, world NED
-  Eigen::Vector3d acc   = Eigen::Vector3d::Zero();       // [m/s^2], body origin, world NED
   Eigen::Matrix3d R     = Eigen::Matrix3d::Identity();   // [SO3], body FRD -> world NED
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();       // [rad/s] body FRD
-  Eigen::Vector3d w_dot = Eigen::Vector3d::Zero();       // [rad/s^2] body FRD
-  Eigen::Matrix3d MoI   = 1.0e-3f * Eigen::Matrix3d::Identity(); // [kg.m^2]
-  Eigen::Vector3d vel_f = Eigen::Vector3d::Zero();       // [m/s], world NED
+  Eigen::Vector3d bpc   = Eigen::Vector3d::Zero();       // [m], body origin -> estimated system CoM, body FRD
+  Eigen::Matrix3d MoI   = 1.0e-3f * Eigen::Matrix3d::Identity(); // [kg.m^2], about estimated system CoM
   std::array<double, param::NUM_JOINTS> theta{};         // [rad], J1-J14
   std::array<double, param::NUM_JOINTS> theta_dot{};     // [rad/s], J1-J14
-  std::array<double, param::NUM_JOINTS> theta_ddot{};    // [rad/s^2], J1-J14
-  std::array<Eigen::Matrix4d, param::NUM_JOINTS> bTj{};  // [SE3], joint frames, body FRD
+  Eigen::Vector3d vel_f = Eigen::Vector3d::Zero();       // [m/s], world NED
 };
 
 struct Command {
@@ -42,6 +38,22 @@ struct Command {
   double theta_t = 0.0;                                // [rad]
 };
 
+struct SimState {
+  Eigen::Vector3d pos   = Eigen::Vector3d::Zero();       // [m], body origin, world NED
+  Eigen::Vector3d bpc   = Eigen::Vector3d::Zero();       // [m], body origin -> system CoM, body FRD
+  Eigen::Vector3d vel   = Eigen::Vector3d::Zero();       // [m/s], body origin, world NED
+  Eigen::Vector3d acc   = Eigen::Vector3d::Zero();       // [m/s^2], body origin, world NED
+  Eigen::Matrix3d R     = Eigen::Matrix3d::Identity();   // [SO3], body FRD -> world NED
+  Eigen::Vector3d w     = Eigen::Vector3d::Zero();       // [rad/s] body FRD
+  Eigen::Vector3d w_dot = Eigen::Vector3d::Zero();       // [rad/s^2] body FRD
+  Eigen::Matrix3d MoI   = 1.0e-3f * Eigen::Matrix3d::Identity(); // [kg.m^2]
+  Eigen::Vector3d vel_f = Eigen::Vector3d::Zero();       // [m/s], world NED
+  std::array<double, param::NUM_JOINTS> theta{};         // [rad], J1-J14
+  std::array<double, param::NUM_JOINTS> theta_dot{};     // [rad/s], J1-J14
+  std::array<double, param::NUM_JOINTS> theta_ddot{};    // [rad/s^2], J1-J14
+  std::array<Eigen::Matrix4d, param::NUM_JOINTS> bTj{};  // [SE3], joint frames, body FRD
+};
+
 struct ViewerData {
   std::array<mjtNum, param::NUM_JOINTS> theta_d{};
   mjtNum theta_t = 0.0;
@@ -55,12 +67,77 @@ struct SimData {
   std::vector<mjtNum> qpos;
   std::vector<mjtNum> qvel;
   mjtNum time = 0;
-  State state{};
+  SimState state{};
   MST::StripState strip_state{};
   std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> aero_pos{};   // [m], body FRD; last = body ellipsoid
   std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> aero_force{}; // [N], body FRD; last = body ellipsoid
   std::array<double, param::NUM_JOINTS> theta_d{};
 };
+
+static inline void initialize_mass_estimate(State& state, SimState& sim_state, const mjModel* model, const mjData* data, const int root_body_id) noexcept {
+  if (model->body_subtreemass[root_body_id] <= 0.0) {return;}
+
+  const Eigen::Vector3d com_world(
+    static_cast<double>(data->subtree_com[3*root_body_id]),
+    static_cast<double>(data->subtree_com[3*root_body_id+1]),
+    static_cast<double>(data->subtree_com[3*root_body_id+2])
+  );
+
+  Eigen::Matrix3d moi_world = Eigen::Matrix3d::Zero();
+  for (int body=1; body<model->nbody; ++body) {
+    int ancestor = body;
+    while (ancestor > 0 && ancestor != root_body_id) {ancestor = model->body_parentid[ancestor];}
+    if (ancestor != root_body_id) {continue;}
+
+    const double mass = static_cast<double>(model->body_mass[body]);
+    const Eigen::Vector3d body_com(
+      static_cast<double>(data->xipos[3*body]),
+      static_cast<double>(data->xipos[3*body+1]),
+      static_cast<double>(data->xipos[3*body+2])
+    );
+    const Eigen::Vector3d offset = body_com-com_world;
+
+    Eigen::Matrix3d world_from_inertial;
+    for (int row=0; row<3; ++row) {
+      for (int col=0; col<3; ++col) {world_from_inertial(row, col) = static_cast<double>(data->ximat[9*body+3*row+col]);}
+    }
+    const Eigen::Vector3d principal_inertia(
+      static_cast<double>(model->body_inertia[3*body]),
+      static_cast<double>(model->body_inertia[3*body+1]),
+      static_cast<double>(model->body_inertia[3*body+2])
+    );
+    moi_world.noalias() += world_from_inertial*principal_inertia.asDiagonal()*world_from_inertial.transpose();
+    moi_world.noalias() += mass*(offset.squaredNorm()*Eigen::Matrix3d::Identity()-offset*offset.transpose());
+  }
+
+  const Eigen::Vector3d body_origin(
+    static_cast<double>(data->xpos[3*root_body_id]),
+    static_cast<double>(data->xpos[3*root_body_id+1]),
+    static_cast<double>(data->xpos[3*root_body_id+2])
+  );
+  Eigen::Matrix3d world_from_body_frd;
+  for (int row=0; row<3; ++row) {
+    for (int col=0; col<3; ++col) {world_from_body_frd(row, col) = static_cast<double>(data->xmat[9*root_body_id+3*row+col]);}
+  }
+  world_from_body_frd *= param::NED_TO_FLU;
+
+  state.bpc = world_from_body_frd.transpose()*(com_world-body_origin);
+  state.MoI = world_from_body_frd.transpose()*moi_world*world_from_body_frd;
+  state.MoI = 0.5*(state.MoI+state.MoI.transpose());
+  sim_state.bpc = state.bpc;
+  sim_state.MoI = state.MoI;
+}
+
+static inline void update_state_estimate(State& state, const SimState& sim_state) noexcept {
+  // This is the estimator boundary. Measurement noise and delay can be added here later.
+  state.pos = sim_state.pos;
+  state.vel = sim_state.vel;
+  state.R = sim_state.R;
+  state.w = sim_state.w;
+  state.theta = sim_state.theta;
+  state.theta_dot = sim_state.theta_dot;
+  state.vel_f = sim_state.vel_f;
+}
 
 static inline Eigen::Matrix3d quat_to_R(const mjtNum* q) {
   // q: body FLU -> world FLU
@@ -181,9 +258,7 @@ inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<E
         const int col = m->M_colind[address];
 
         mjtNum value = 0;
-        for (int j=0; j<6; ++j) {
-          value += jac[j*nv+row]*inertia_jac[j*nv+col];
-        }
+        for (int j=0; j<6; ++j) {value += jac[j*nv+row]*inertia_jac[j*nv+col];}
         d->M[address] += value;
       }
     }

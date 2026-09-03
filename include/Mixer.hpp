@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstddef>
 
+struct State;
+
 class Mixer {
 public:
   static constexpr std::size_t NSTRIP_REDUCTION = 2;
@@ -26,7 +28,7 @@ public:
   void reset() noexcept;
 
   // prev_input = [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep].
-  const Eigen::Matrix<double, 6, 1>& update(const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& bpc, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
+  const Eigen::Matrix<double, 6, 1>& update(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
 
 private:
   static constexpr std::size_t HUMERUS_SAMPLE_COUNT = 2 * N_PHASE * NH;
@@ -45,7 +47,7 @@ private:
   Eigen::Matrix<double, 6, 1> wrench_ = Eigen::Matrix<double, 6, 1>::Zero();
 
   void rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
-  void accumulate_range(std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept;
+  void accumulate_range(std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept;
 
   static inline void rotate_x(Eigen::Matrix3d& rotation, const double angle) noexcept {
     const double c = std::cos(angle);

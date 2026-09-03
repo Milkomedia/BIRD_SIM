@@ -139,7 +139,9 @@ int main(int argc, char** argv) {
     Mixer mixer{};
     bird_mmap::MMapLogger mmap_logger{};
     mmap_logger.open();
+    SimState sim_state{};
     State s{};
+    initialize_mass_estimate(s, sim_state, m, sim_data, body_id);
     Command cmd{};
     cmd.theta = param::INITIAL_DES_THETA;
     std::array<double, param::NUM_JOINTS> elrs_theta = param::INITIAL_DES_THETA;
@@ -255,7 +257,7 @@ int main(int argc, char** argv) {
       }
       if (!elrs_enabled) {for(std::size_t i=0; i<param::NUM_JOINTS; ++i) {cmd.theta[i] = static_cast<double>(viewer_data.theta_d[i]);}}
 
-      s.vel_f = Eigen::Vector3d(-8.0, 0.0, 0.0);
+      sim_state.vel_f = Eigen::Vector3d(-8.0, 0.0, 0.0);
       cmd.theta_t = static_cast<double>(viewer_data.theta_t);
 
       // --- Control and servo dynamics ---
@@ -269,30 +271,31 @@ int main(int argc, char** argv) {
           mj_step1(m, sim_data);
 
           { // --- Position/velocity state at t_k ---
-            s.pos(0) = static_cast<double>( sensor_pos[0]);
-            s.pos(1) = static_cast<double>(-sensor_pos[1]);
-            s.pos(2) = static_cast<double>(-sensor_pos[2]);
-            s.vel(0) = static_cast<double>( sensor_vel[0]);
-            s.vel(1) = static_cast<double>(-sensor_vel[1]);
-            s.vel(2) = static_cast<double>(-sensor_vel[2]);
-            s.w(0) = static_cast<double>( sensor_gyro[0]);
-            s.w(1) = static_cast<double>(-sensor_gyro[1]);
-            s.w(2) = static_cast<double>(-sensor_gyro[2]);
-            s.R = quat_to_R(sensor_quat);
+            sim_state.pos(0) = static_cast<double>( sensor_pos[0]);
+            sim_state.pos(1) = static_cast<double>(-sensor_pos[1]);
+            sim_state.pos(2) = static_cast<double>(-sensor_pos[2]);
+            sim_state.vel(0) = static_cast<double>( sensor_vel[0]);
+            sim_state.vel(1) = static_cast<double>(-sensor_vel[1]);
+            sim_state.vel(2) = static_cast<double>(-sensor_vel[2]);
+            sim_state.w(0) = static_cast<double>( sensor_gyro[0]);
+            sim_state.w(1) = static_cast<double>(-sensor_gyro[1]);
+            sim_state.w(2) = static_cast<double>(-sensor_gyro[2]);
+            sim_state.R = quat_to_R(sensor_quat);
 
             const Eigen::Vector3d Gpc_NED(static_cast<double>( subtree_com[0]), static_cast<double>(-subtree_com[1]), static_cast<double>(-subtree_com[2]));
-            s.bpc = s.R.transpose() * (Gpc_NED - s.pos);
+            sim_state.bpc = sim_state.R.transpose() * (Gpc_NED - sim_state.pos);
 
             for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
-              s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
-              s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
+              sim_state.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
+              sim_state.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
             }
           }
 
-          FK(s.theta, s.bTj);
+          FK(sim_state.theta, sim_state.bTj);
+          update_state_estimate(s, sim_state);
 
           // --- Control allocation ---
-          const Eigen::Matrix<double, 6, 1>& estimated_wrench = mixer.update(s.R.transpose()*(s.vel_f-s.vel), s.bpc, cmd.u);
+          const Eigen::Matrix<double, 6, 1>& estimated_wrench = mixer.update(s, cmd.u);
           // Future automatic control-allocation and joint-trajectory logic goes here.
 
           // Manual mode has final authority over any automatic joint command.
@@ -317,10 +320,10 @@ int main(int argc, char** argv) {
             sim_data->ctrl[mj_utils::g_actuator_ids[i]] = static_cast<mjtNum>(servo[i].motor_state.torque);
           }
 
-          mst.update_dynamics(s, cmd.theta_t, log_due);
+          mst.update_dynamics(sim_state, cmd.theta_t, log_due);
 
-          const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * s.R;
-          const Eigen::Vector3d Gpb_FLU = param::NED_TO_FLU * s.pos;
+          const Eigen::Matrix3d GRb_FLU = param::NED_TO_FLU * sim_state.R;
+          const Eigen::Vector3d Gpb_FLU = param::NED_TO_FLU * sim_state.pos;
           mj_utils::g_manus_trajectory.sample_if_due(static_cast<double>(sim_data->time), mst.copy_strip_state().p_m, GRb_FLU, Gpb_FLU);
 
           // Transfer MST's current added inertia to MuJoCo's generalized mass.
@@ -356,23 +359,23 @@ int main(int argc, char** argv) {
           mj_step2(m, sim_data);
 
           { // --- Acceleration state solved at t_k ---
-            s.acc(0) = static_cast<double>( sensor_acc[0]);
-            s.acc(1) = static_cast<double>(-sensor_acc[1]);
-            s.acc(2) = static_cast<double>(-sensor_acc[2]);
-            s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
-            for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
+            sim_state.acc(0) = static_cast<double>( sensor_acc[0]);
+            sim_state.acc(1) = static_cast<double>(-sensor_acc[1]);
+            sim_state.acc(2) = static_cast<double>(-sensor_acc[2]);
+            sim_state.w_dot = sim_state.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
+            for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {sim_state.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);}
 
             // Keep qddot-dependent added-mass telemetry synchronized to every log sample.
-            if (snapshot_due || log_due) {mst.update_visualization(s, cmd.theta_t);}
+            if (snapshot_due || log_due) {mst.update_visualization(sim_state, cmd.theta_t);}
           }
 
           ++sim_step;
           if (log_due) {
             for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
               servo_torque[i] = servo[i].motor_state.torque;
-              damping_torque[i] = -joint_passive_damping[i] * s.theta_dot[i];
+              damping_torque[i] = -joint_passive_damping[i] * sim_state.theta_dot[i];
             }
-            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, s, cmd, mst, servo_torque, damping_torque);
+            mmap_logger.push(sample_time, sim_step, handled_reset_epoch, sim_state, cmd, mst, servo_torque, damping_torque);
           }
         }
       }
@@ -381,32 +384,33 @@ int main(int argc, char** argv) {
         std::copy_n(sim_data->qvel, snapshot_qvel.size(), snapshot_qvel.begin());
         snapshot_time = sim_data->time;
       
-        s.pos(0) = static_cast<double>( sensor_pos[0]);
-        s.pos(1) = static_cast<double>(-sensor_pos[1]);
-        s.pos(2) = static_cast<double>(-sensor_pos[2]);
-        s.vel(0) = static_cast<double>( sensor_vel[0]);
-        s.vel(1) = static_cast<double>(-sensor_vel[1]);
-        s.vel(2) = static_cast<double>(-sensor_vel[2]);
-        s.acc(0) = static_cast<double>( sensor_acc[0]);
-        s.acc(1) = static_cast<double>(-sensor_acc[1]);
-        s.acc(2) = static_cast<double>(-sensor_acc[2]);
-        s.w(0) = static_cast<double>( sensor_gyro[0]);
-        s.w(1) = static_cast<double>(-sensor_gyro[1]);
-        s.w(2) = static_cast<double>(-sensor_gyro[2]);
-        s.R = quat_to_R(sensor_quat);
-        s.w_dot = s.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
+        sim_state.pos(0) = static_cast<double>( sensor_pos[0]);
+        sim_state.pos(1) = static_cast<double>(-sensor_pos[1]);
+        sim_state.pos(2) = static_cast<double>(-sensor_pos[2]);
+        sim_state.vel(0) = static_cast<double>( sensor_vel[0]);
+        sim_state.vel(1) = static_cast<double>(-sensor_vel[1]);
+        sim_state.vel(2) = static_cast<double>(-sensor_vel[2]);
+        sim_state.acc(0) = static_cast<double>( sensor_acc[0]);
+        sim_state.acc(1) = static_cast<double>(-sensor_acc[1]);
+        sim_state.acc(2) = static_cast<double>(-sensor_acc[2]);
+        sim_state.w(0) = static_cast<double>( sensor_gyro[0]);
+        sim_state.w(1) = static_cast<double>(-sensor_gyro[1]);
+        sim_state.w(2) = static_cast<double>(-sensor_gyro[2]);
+        sim_state.R = quat_to_R(sensor_quat);
+        sim_state.w_dot = sim_state.R.transpose() * Eigen::Vector3d(static_cast<double>(sensor_angacc[0]), static_cast<double>(-sensor_angacc[1]), static_cast<double>(-sensor_angacc[2]));
 
         const Eigen::Vector3d Gpc_NED(static_cast<double>( subtree_com[0]), static_cast<double>(-subtree_com[1]), static_cast<double>(-subtree_com[2]));
-        s.bpc = s.R.transpose() * (Gpc_NED - s.pos);
+        sim_state.bpc = sim_state.R.transpose() * (Gpc_NED - sim_state.pos);
 
         for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {
-          s.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
-          s.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
-          s.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);
+          sim_state.theta[i] = static_cast<double>(sim_data->qpos[servo_qpos_address[i]]);
+          sim_state.theta_dot[i] = static_cast<double>(sim_data->qvel[servo_qvel_address[i]]);
+          sim_state.theta_ddot[i] = static_cast<double>(sim_data->qacc[servo_qvel_address[i]]);
         }
 
-        FK(s.theta, s.bTj);
-        mst.update_visualization(s, cmd.theta_t);
+        FK(sim_state.theta, sim_state.bTj);
+        update_state_estimate(s, sim_state);
+        mst.update_visualization(sim_state, cmd.theta_t);
         applied_aero_pos = mst.positions();
         applied_aero_force = mst.forces();
       }
@@ -418,7 +422,7 @@ int main(int argc, char** argv) {
           shared_sim_data.qpos.swap(snapshot_qpos);
           shared_sim_data.qvel.swap(snapshot_qvel);
           shared_sim_data.time = snapshot_time;
-          shared_sim_data.state = s;
+          shared_sim_data.state = sim_state;
           shared_sim_data.strip_state = mst.copy_strip_state();
           shared_sim_data.aero_pos = applied_aero_pos;
           shared_sim_data.aero_force = applied_aero_force;
@@ -439,7 +443,7 @@ int main(int argc, char** argv) {
   // ---------------- [ Viewer thread (main thread) ] ----------------
   const std::chrono::steady_clock::duration render_period = param::RENDER_DT_US;
   std::uint64_t handled_viewer_reset_epoch = mj_utils::g_reset_epoch;
-  State copied_state{};
+  SimState copied_state{};
   MST::StripState copied_strip_state{};
   std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> copied_aero_pos{};
   std::array<Eigen::Vector3d, MST::NUM_AERO_LOADS> copied_aero_force{};

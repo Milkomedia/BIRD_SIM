@@ -1,7 +1,7 @@
 #include "MST.hpp"
 
 #include "coeff/coeff.hpp"
-#include "utils.hpp" // State
+#include "utils.hpp" // SimState
 
 #include <algorithm>
 #include <cmath>
@@ -35,7 +35,7 @@ void MST::reset() {
   aero_pos_.back() = param::ELLIPSOID_CENTER_POS;
 }
 
-void MST::update_body_elipsoid(const State& s) {
+void MST::update_body_elipsoid(const SimState& s) {
   constexpr double PI = 3.14159265358979323846;
   constexpr double EPS = 1e-14;
   constexpr double MIN = 1e-15;
@@ -518,7 +518,7 @@ void MST::update_strip_w_wdot(Eigen::Vector3d& omega_i, Eigen::Vector3d& omega_d
   omega_dot_i = bRsi.transpose() * b_omega_dot_b_theta + omega_b_theta.cross(omega_phi_psi) + omega_dot_phi_psi;
 }
 
-void MST::update_wake_source(const State& s) {
+void MST::update_wake_source(const SimState& s) {
   static_assert(param::NH == 7 && param::NR == 6 && param::NM == 25, "Wake source map must follow the wing strip layout.");
   static_assert(param::WAKE_SPAN_PANELS == 12, "Wake source map must contain 12 span panels.");
   static_assert(FULL_WAKE_SPAN_NODES == 2*HALF_WAKE_SPAN_NODES, "Full-span wake node count is inconsistent.");
@@ -588,7 +588,7 @@ void MST::update_wake_source(const State& s) {
   );
 }
 
-bool MST::update_wake(const State& s) {
+bool MST::update_wake(const SimState& s) {
   static_assert(param::WAKE_UPDATE_DECIMATION > 0, "Wake update decimation must be positive.");
   static_assert(param::WAKE_AGE_CELLS > 0, "Wake history must contain at least one age cell.");
 
@@ -628,7 +628,7 @@ bool MST::update_wake(const State& s) {
   return true;
 }
 
-void MST::update_tail_wake_velocity(const State& s) {
+void MST::update_tail_wake_velocity(const SimState& s) {
   constexpr double INV_FOUR_PI = 0.07957747154594767;
   constexpr double EPS2 = 1.0e-16;
   constexpr double MIN_ACTIVE_AREA = 1.0e-12;
@@ -1144,7 +1144,7 @@ void MST::update_full_added_mass_telemetry() {
   }
 }
 
-void MST::update(const State& s, const double theta_t, const bool acceleration_bias_only, const bool update_loads, const bool update_telemetry) {
+void MST::update(const SimState& s, const double theta_t, const bool acceleration_bias_only, const bool update_loads, const bool update_telemetry) {
   const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
   const Eigen::Vector3d body_acc = acceleration_bias_only ? zero : s.acc;
   const Eigen::Vector3d body_w_dot = acceleration_bias_only ? zero : s.w_dot;

@@ -1,7 +1,9 @@
 #include "Mixer.hpp"
 
 #include "coeff/coeff.hpp"
+#include "utils.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -95,26 +97,30 @@ void Mixer::reset() noexcept {
   wrench_.setZero();
 }
 
-const Eigen::Matrix<double, 6, 1>& Mixer::update(const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& bpc, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept {
+const Eigen::Matrix<double, 6, 1>& Mixer::update(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept {
   rebuild_kinematics(prev_input);
 
   wrench_.setZero();
 
-  accumulate_range(0, HUMERUS_SAMPLE_COUNT, RtVrel, bpc, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM);
-  accumulate_range(RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, bpc, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM);
-  accumulate_range(MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, bpc, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM);
+  const Eigen::Vector3d RtVrel = state.R.transpose()*(state.vel_f-state.vel);
+
+  accumulate_range(0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM);
+  accumulate_range(RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM);
+  accumulate_range(MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM);
   wrench_ *= 1.0 / static_cast<double>(N_PHASE);
 
   return wrench_;
 }
 
-void Mixer::accumulate_range(const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept {
+void Mixer::accumulate_range(const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept {
   for (std::size_t i=begin; i<end; ++i) {
     const double area = area_[i];
     if (area <= 0.0) {continue;}
 
     const Eigen::Matrix3d& bRsi = bRsi_[i];
-    const Eigen::Vector3d bVrel_ac = RtVrel - bv_ac_[i];
+    // Add the rigid-body velocity at the aerodynamic center to the cached
+    // joint-driven velocity before evaluating the local relative flow.
+    const Eigen::Vector3d bVrel_ac = RtVrel - b_omega.cross(bp_ac_[i]) - bv_ac_[i];
     const double vx = bRsi.col(0).dot(bVrel_ac);
     const double vz = bRsi.col(2).dot(bVrel_ac);
     const double U2 = vx*vx + vz*vz;
@@ -283,10 +289,11 @@ void Mixer::rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) no
       // absorbs the remainder and preserves their total discrete width.
       for (std::size_t strip=0; strip<NH; ++strip) {
         const std::size_t i0 = strip*NSTRIP_REDUCTION;
-        const std::size_t i1 = i0+NSTRIP_REDUCTION;
+        const std::size_t i1 = std::min(i0+NSTRIP_REDUCTION, param::NH);
+        const std::size_t strip_count = i1-i0;
         const double i_mid = 0.5*static_cast<double>(i0+i1-1);
         const double y = param::DY_H*i_mid;
-        const double dy = param::DY_H*static_cast<double>(NSTRIP_REDUCTION);
+        const double dy = param::DY_H*static_cast<double>(strip_count);
         const double c = param::C_H0 + param::DL_H*i_mid;
         const Eigen::Vector3d drho = (span_sign*y)*bRh0.col(1);
         const Eigen::Vector3d bp_le = bph0 + drho;
@@ -319,10 +326,11 @@ void Mixer::rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) no
 
       for (std::size_t strip=0; strip<NR; ++strip) {
         const std::size_t i0 = strip*NSTRIP_REDUCTION;
-        const std::size_t i1 = i0+NSTRIP_REDUCTION;
+        const std::size_t i1 = std::min(i0+NSTRIP_REDUCTION, param::NR);
+        const std::size_t strip_count = i1-i0;
         const double i_mid = 0.5*static_cast<double>(i0+i1-1);
         const double y = param::DY_R*i_mid;
-        const double dy = param::DY_R*static_cast<double>(NSTRIP_REDUCTION);
+        const double dy = param::DY_R*static_cast<double>(strip_count);
         const double lambda = y/param::L_R;
         const double phi = phi_h + lambda*delta_phi;
         const double phi_dot = phi_dot_h + lambda*(phi_dot_m-phi_dot_h);
@@ -355,10 +363,11 @@ void Mixer::rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) no
 
       for (std::size_t strip=0; strip<NM; ++strip) {
         const std::size_t i0 = strip*NSTRIP_REDUCTION;
-        const std::size_t i1 = i0+NSTRIP_REDUCTION;
+        const std::size_t i1 = std::min(i0+NSTRIP_REDUCTION, param::NM);
+        const std::size_t strip_count = i1-i0;
         const double i_mid = 0.5*static_cast<double>(i0+i1-1);
         const double y = param::DY_M*i_mid;
-        const double dy = param::DY_M*static_cast<double>(NSTRIP_REDUCTION);
+        const double dy = param::DY_M*static_cast<double>(strip_count);
         const bool primary = i_mid >= static_cast<double>(param::DECLINE_IDX_K);
         const double c = primary ? param::C_MK + param::DL_M2*(i_mid-static_cast<double>(param::DECLINE_IDX_K)) : param::C_M0 + param::DL_M1*i_mid;
         const double primary_steps = primary ? i_mid-static_cast<double>(param::DECLINE_IDX_K)+1.0 : 0.0;

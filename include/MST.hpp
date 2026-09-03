@@ -6,7 +6,7 @@
 #include <array>
 #include <cstddef>
 
-struct State;
+struct SimState;
 
 class MST {
 public:
@@ -136,8 +136,8 @@ public:
 
   MST();
   void reset();
-  void update_dynamics(const State& s, const double theta_t, const bool update_telemetry = false) {update(s, theta_t, true, true, update_telemetry); update_body_elipsoid(s);}
-  void update_visualization(const State& s, const double theta_t) {update(s, theta_t, false, false, false); update_full_added_mass_telemetry();}
+  void update_dynamics(const SimState& s, const double theta_t, const bool update_telemetry = false) {update(s, theta_t, true, true, update_telemetry); update_body_elipsoid(s);}
+  void update_visualization(const SimState& s, const double theta_t) {update(s, theta_t, false, false, false); update_full_added_mass_telemetry();}
 
   const std::array<Eigen::Vector3d, NUM_AERO_LOADS>& positions() const noexcept {return aero_pos_;}
   const std::array<Eigen::Vector3d, NUM_AERO_LOADS>& forces() const noexcept {return aero_force_;}
@@ -193,12 +193,12 @@ private:
   std::size_t wake_sample_count_ = 0;
   bool wake_initialized_ = false;
 
-  void update(const State& s, double theta_t, bool acceleration_bias_only, bool update_loads, bool update_telemetry);
-  void update_body_elipsoid(const State& s);
+  void update(const SimState& s, double theta_t, bool acceleration_bias_only, bool update_loads, bool update_telemetry);
+  void update_body_elipsoid(const SimState& s);
   void update_full_added_mass_telemetry();
-  void update_wake_source(const State& s);
-  bool update_wake(const State& s);
-  void update_tail_wake_velocity(const State& s);
+  void update_wake_source(const SimState& s);
+  bool update_wake(const SimState& s);
+  void update_tail_wake_velocity(const SimState& s);
 
   void update_atan2_dot_ddot(double& angle_dot, double& angle_ddot, const double y, const double x, const double y_dot, const double x_dot, const double y_ddot, const double x_ddot);
   void update_relative_vector_dot_ddot(Eigen::Vector3d& x_dot_0, Eigen::Vector3d& x_ddot_0, const Eigen::Vector3d& x_0, const Eigen::Matrix3d& bR0, const Eigen::Vector3d& b_omega_0, const Eigen::Vector3d& b_omega_dot_0, const Eigen::Vector3d& b_omega_x, const Eigen::Vector3d& b_omega_dot_x);
