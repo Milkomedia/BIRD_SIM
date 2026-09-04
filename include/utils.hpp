@@ -31,7 +31,7 @@ struct Command {
   Eigen::Vector3d w     = Eigen::Vector3d::Zero();     // [rad/s]
 
   // Desired control input. order : [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep]
-  Eigen::Matrix<double, 6, 1> u = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> u = (Eigen::Matrix<double, 6, 1>() << param::MIN_FREQ, param::MIN_FLAPPING_AMPLITUDE, 0.0, param::MIN_PITCHING_AMPLITUDE, 0.0, 0.0).finished();
 
   // Joint control
   std::array<double, param::NUM_JOINTS> theta{};       // [rad]
