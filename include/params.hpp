@@ -13,6 +13,8 @@ namespace param {
   inline constexpr std::chrono::steady_clock::duration SPIN_MARGIN_US = std::chrono::microseconds(20);
   inline constexpr double SIM_DT_SEC = std::chrono::duration<double>(SIM_DT_US).count();
 
+  inline constexpr bool DISABLE_WAGNER = true;
+
   // ----- Flapping Motion Parameters -----
   inline constexpr double R1 = 0.45;
   inline constexpr double R2 = 0.35;

@@ -989,8 +989,8 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
 
     if (state_idx < NUM_WING_STRIPS) {
       // Kutta-Joukowski-equivalent circulation from the circulatory lift only.
-      wing_circulation_[state_idx] = 0.5*U*c*(Cl_dynamic+Cl_wagner);
-      // wing_circulation_[state_idx] = 0.5*U*c*Cl_dynamic; // disable wagner force
+      if constexpr (param::DISABLE_WAGNER) {wing_circulation_[state_idx] = 0.5*U*c*Cl_dynamic;}
+      else {wing_circulation_[state_idx] = 0.5*U*c*(Cl_dynamic+Cl_wagner);} // enable wagner force
     }
 
     // a and omega_dot contain only qdot-dependent bias in update_dynamics().
@@ -1010,8 +1010,9 @@ void MST::update_segment_aerodynamics(const std::array<Eigen::Vector3d, 2*N>& p,
     const Eigen::Vector3d bF_dynamic = Fx_dynamic*bRsi.col(0) + Fz_dynamic*bRsi.col(2);
     const Eigen::Vector3d bF_wagner = Fx_wagner*bRsi.col(0) + Fz_wagner*bRsi.col(2);
     const Eigen::Vector3d bF_added = added_force*bRsi.col(2);
-    const Eigen::Vector3d bF = bF_lut + bF_dynamic + bF_wagner + bF_added;
-    // const Eigen::Vector3d bF = bF_lut + bF_dynamic + bF_added; // disable wagner force
+    Eigen::Vector3d bF;
+    if constexpr (param::DISABLE_WAGNER) {bF = bF_lut + bF_dynamic + bF_added;}
+    else {bF = bF_lut + bF_dynamic + bF_wagner + bF_added;} // enable wagner force
     const Eigen::Vector3d bM_lut = My_lut*bRsi.col(1);
     const Eigen::Vector3d bM_added = added_moment*bRsi.col(1);
 

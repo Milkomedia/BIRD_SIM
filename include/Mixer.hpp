@@ -13,8 +13,8 @@ struct State;
 
 class Mixer {
 public:
-  static constexpr std::size_t NSTRIP_REDUCTION = 2;
-  static constexpr std::size_t N_PHASE  = 24;
+  static constexpr std::size_t NSTRIP_REDUCTION = 3;
+  static constexpr std::size_t N_PHASE  = 16;
 
   static_assert(NSTRIP_REDUCTION > 0, "NSTRIP_REDUCTION must be greater than zero.");
   static_assert(N_PHASE > 0, "N_PHASE must be greater than zero.");
@@ -22,7 +22,8 @@ public:
   static constexpr std::size_t NH = (param::NH + NSTRIP_REDUCTION - 1) / NSTRIP_REDUCTION;
   static constexpr std::size_t NR = (param::NR + NSTRIP_REDUCTION - 1) / NSTRIP_REDUCTION;
   static constexpr std::size_t NM = (param::NM + NSTRIP_REDUCTION - 1) / NSTRIP_REDUCTION;
-  static constexpr std::size_t TOTAL_SAMPLES  = 2*(NH + NR + NM) * N_PHASE;
+  static constexpr std::size_t TOTAL_STRIPS = 2*(NH + NR + NM);
+  static constexpr std::size_t TOTAL_SAMPLES = TOTAL_STRIPS * N_PHASE;
 
   Mixer() noexcept {}
 
@@ -36,6 +37,17 @@ private:
   static constexpr std::size_t RADIUS_SAMPLE_BEGIN = HUMERUS_SAMPLE_COUNT;
   static constexpr std::size_t MANUS_SAMPLE_BEGIN = HUMERUS_SAMPLE_COUNT + RADIUS_SAMPLE_COUNT;
 
+  struct DynamicStallState {
+    std::array<double, 2> X{1.0, 1.0};
+    std::array<double, 2> X_eq{1.0, 1.0};
+    std::array<double, 2> q_ss{};
+    std::array<double, 2> D2{};
+    double alpha = 0.0;
+    bool state_initialized = false;
+    bool alpha_initialized = false;
+    std::array<bool, 2> active{};
+  };
+
   // Cached strip kinematics; forward() scratch storage only
   std::array<Eigen::Vector3d, TOTAL_SAMPLES> bp_ac_{};
   std::array<Eigen::Vector3d, TOTAL_SAMPLES> bv_ac_{};
@@ -43,10 +55,20 @@ private:
   std::array<double, TOTAL_SAMPLES> c_{};
   std::array<double, TOTAL_SAMPLES> area_{};
 
+  // Cached local flow
+  std::array<double, TOTAL_SAMPLES> flow_vx_{};
+  std::array<double, TOTAL_SAMPLES> flow_vz_{};
+  std::array<double, TOTAL_SAMPLES> flow_speed_{};
+  std::array<double, TOTAL_SAMPLES> flow_alpha_{};
+
+  // Every finite-difference candidate starts from the same nominal history.
+  std::array<DynamicStallState, TOTAL_STRIPS> dynamic_stall_state_{};
+  std::array<DynamicStallState, TOTAL_STRIPS> dynamic_stall_initial_state_{};
+
   // prev_input = [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep].
-  Eigen::Matrix<double, 6, 1> forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
+  Eigen::Matrix<double, 6, 1> forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input, bool initialize_dynamic_stall) noexcept;
   void rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
-  void accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept;
+  void accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, double phase_rate, bool update_flow, bool accumulate_load, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL_POS)[14], const double (&ALPHA_STALL_NEG)[14]) noexcept;
 
   static inline void rotate_x(Eigen::Matrix3d& rotation, const double angle) noexcept {
     const double c = std::cos(angle);

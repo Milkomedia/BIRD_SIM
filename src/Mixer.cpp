@@ -10,11 +10,19 @@
 
 namespace {
 constexpr double PI = 3.14159265358979323846;
+constexpr double TWO_PI = 2.0 * PI;
 constexpr double RAD_TO_DEG = 57.2957795130823209;
+constexpr double DEG_TO_RAD = 0.017453292519943295;
 constexpr double HALF_RHO = 0.5 * param::AIR_DENSITY;
 constexpr double INV_KINEMATIC_VISCOSITY = 1.0 / param::AIR_KINEMATIC_VISCOSITY;
 constexpr double MIN_VECTOR_NORM2 = 1.0e-20;
 constexpr double MIN_FLOW_SPEED2 = 1.0e-12;
+constexpr double GK_D1 = 4.24;
+constexpr double GK_DSTALL_MAX = 20.0;
+constexpr double GK_MIN_SPEED = 0.1;
+constexpr double GK_SURFACE_BLEND_ANGLE = DEG_TO_RAD;
+constexpr double GK_REATTACH_TOLERANCE = 0.02;
+constexpr std::size_t ZERO_ALPHA_IDX = 50;
 
 constexpr std::array<double, 6> INPUT_LOWER_BOUNDS = {0.0, 0.0, -param::MAX_FLAPPING_DIFFERENCE, 0.0, -param::MAX_PITCHING_DIFFERENCE, -param::MAX_SWEEP_BIAS};
 constexpr std::array<double, 6> INPUT_UPPER_BOUNDS = {param::MAX_FREQ, param::MAX_FLAPPING_AMPLITUDE, param::MAX_FLAPPING_DIFFERENCE, param::MAX_PITCHING_AMPLITUDE, param::MAX_PITCHING_DIFFERENCE, param::MAX_SWEEP_BIAS};
@@ -96,15 +104,29 @@ inline void update_projected_phi(double& phi, double& phi_dot, const Eigen::Vect
 
 } // namespace
 
-Eigen::Matrix<double, 6, 1> Mixer::forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept {
+Eigen::Matrix<double, 6, 1> Mixer::forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input, const bool initialize_dynamic_stall) noexcept {
   rebuild_kinematics(prev_input);
 
   Eigen::Matrix<double, 6, 1> wrench = Eigen::Matrix<double, 6, 1>::Zero();
   const Eigen::Vector3d RtVrel = state.R.transpose()*(state.vel_f-state.vel);
+  const double phase_rate = std::max(prev_input(0), 0.0)*static_cast<double>(N_PHASE);
 
-  accumulate_wrench(wrench, 0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM);
-  accumulate_wrench(wrench, RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM);
-  accumulate_wrench(wrench, MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM);
+  if (initialize_dynamic_stall) {
+    for (DynamicStallState& dynamic_stall : dynamic_stall_state_) {dynamic_stall = {};}
+
+    // Precondition the nominal GK states for one wingbeat and cache its flow.
+    accumulate_wrench(wrench, 0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, phase_rate, true, false, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM, param::coeff::NACA_GK_X0, param::coeff::NACA_GK_ALPHA_STALL, param::coeff::NACA_GK_ALPHA_STALL_NEG);
+    accumulate_wrench(wrench, RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, phase_rate, true, false, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM, param::coeff::S20_GK_X0, param::coeff::S20_GK_ALPHA_STALL, param::coeff::S20_GK_ALPHA_STALL_NEG);
+    accumulate_wrench(wrench, MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, phase_rate, true, false, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM, param::coeff::S40_GK_X0, param::coeff::S40_GK_ALPHA_STALL, param::coeff::S40_GK_ALPHA_STALL_NEG);
+    dynamic_stall_initial_state_ = dynamic_stall_state_;
+  }
+  // Hold the aerodynamic history fixed while perturbing each control input.
+  else {dynamic_stall_state_ = dynamic_stall_initial_state_;}
+
+  const bool update_flow = !initialize_dynamic_stall;
+  accumulate_wrench(wrench, 0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, phase_rate, update_flow, true, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM, param::coeff::NACA_GK_X0, param::coeff::NACA_GK_ALPHA_STALL, param::coeff::NACA_GK_ALPHA_STALL_NEG);
+  accumulate_wrench(wrench, RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, phase_rate, update_flow, true, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM, param::coeff::S20_GK_X0, param::coeff::S20_GK_ALPHA_STALL, param::coeff::S20_GK_ALPHA_STALL_NEG);
+  accumulate_wrench(wrench, MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, phase_rate, update_flow, true, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM, param::coeff::S40_GK_X0, param::coeff::S40_GK_ALPHA_STALL, param::coeff::S40_GK_ALPHA_STALL_NEG);
   wrench *= 1.0 / static_cast<double>(N_PHASE);
 
   return wrench;
@@ -112,7 +134,7 @@ Eigen::Matrix<double, 6, 1> Mixer::forward(const State& state, const Eigen::Matr
 
 void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input, Eigen::Matrix<double, 6, 6>& B, Eigen::Matrix<double, 6, 1>& nominal_wrench) noexcept {
 
-  nominal_wrench = forward(state, prev_input);
+  nominal_wrench = forward(state, prev_input, true);
   B.setZero();
 
   for (Eigen::Index input_idx=0; input_idx<6; ++input_idx) {
@@ -127,8 +149,8 @@ void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev
       Eigen::Matrix<double, 6, 1> minus_input = prev_input;
       plus_input(input_idx) += step;
       minus_input(input_idx) -= step;
-      const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input);
-      const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input);
+      const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input, false);
+      const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input, false);
       derivative = (plus_wrench-minus_wrench)/(2.0*step);
     }
     else if (input+2.0*step <= upper) {
@@ -137,8 +159,8 @@ void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev
       Eigen::Matrix<double, 6, 1> second_input = prev_input;
       first_input(input_idx) += step;
       second_input(input_idx) += 2.0*step;
-      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input);
-      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input);
+      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input, false);
+      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input, false);
       derivative = (-3.0*nominal_wrench+4.0*first_wrench-second_wrench)/(2.0*step);
     }
     else if (input-2.0*step >= lower) {
@@ -147,8 +169,8 @@ void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev
       Eigen::Matrix<double, 6, 1> second_input = prev_input;
       first_input(input_idx) -= step;
       second_input(input_idx) -= 2.0*step;
-      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input);
-      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input);
+      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input, false);
+      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input, false);
       derivative = (3.0*nominal_wrench-4.0*first_wrench+second_wrench)/(2.0*step);
     }
     else {
@@ -160,8 +182,8 @@ void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev
         Eigen::Matrix<double, 6, 1> minus_input = prev_input;
         plus_input(input_idx) = plus;
         minus_input(input_idx) = minus;
-        const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input);
-        const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input);
+        const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input, false);
+        const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input, false);
         derivative = (plus_wrench-minus_wrench)/(plus-minus);
       }
     }
@@ -170,40 +192,182 @@ void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev
   }
 }
 
-void Mixer::accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept {
+void Mixer::accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double phase_rate, const bool update_flow, const bool accumulate_load, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14], const double (&X0)[176][14], const double (&ALPHA_STALL_POS)[14], const double (&ALPHA_STALL_NEG)[14]) noexcept {
+  constexpr std::size_t UPPER_SURFACE = 0;
+  constexpr std::size_t LOWER_SURFACE = 1;
+  // Kinematic samples are phase-major; modulo maps all phase copies back to
+  // the same physical reduced strip.
+  const std::size_t state_begin = begin/N_PHASE;
+  const std::size_t state_count = (end-begin)/N_PHASE;
+
   for (std::size_t i=begin; i<end; ++i) {
+    DynamicStallState& dynamic_stall = dynamic_stall_state_[state_begin+(i-begin)%state_count];
     const double area = area_[i];
-    if (area <= 0.0) {continue;}
+    if (area <= 0.0) {
+      if (update_flow) {flow_speed_[i] = 0.0;}
+      dynamic_stall.alpha_initialized = false;
+      continue;
+    }
 
-    const Eigen::Matrix3d& bRsi = bRsi_[i];
-    // Add the rigid-body velocity at the aerodynamic center to the cached
-    // joint-driven velocity before evaluating the local relative flow.
-    const Eigen::Vector3d bVrel_ac = RtVrel - b_omega.cross(bp_ac_[i]) - bv_ac_[i];
-    const double vx = bRsi.col(0).dot(bVrel_ac);
-    const double vz = bRsi.col(2).dot(bVrel_ac);
-    const double U2 = vx*vx + vz*vz;
-    if (U2 <= MIN_FLOW_SPEED2) {continue;}
-
-    const double U = std::sqrt(U2);
-    const double alpha = std::atan2(vz, vx);
+    double vx;
+    double vz;
+    double U;
+    double alpha;
     std::size_t alpha_idx;
+    std::size_t Re_idx;
     double k_alpha;
-    param::coeff::get_idx_alpha(alpha_idx, k_alpha, alpha*RAD_TO_DEG);
+    double k_Re;
+
+    if (update_flow) {
+      const Eigen::Matrix3d& bRsi = bRsi_[i];
+      // Add the rigid-body velocity at the aerodynamic center to the cached
+      // joint-driven velocity before evaluating the local relative flow.
+      const Eigen::Vector3d bVrel_ac = RtVrel - b_omega.cross(bp_ac_[i]) - bv_ac_[i];
+      vx = bRsi.col(0).dot(bVrel_ac);
+      vz = bRsi.col(2).dot(bVrel_ac);
+      const double U2 = vx*vx + vz*vz;
+      if (U2 <= MIN_FLOW_SPEED2) {
+        flow_speed_[i] = 0.0;
+        dynamic_stall.alpha_initialized = false;
+        continue;
+      }
+
+      U = std::sqrt(U2);
+      alpha = std::atan2(vz, vx);
+      param::coeff::get_idx_alpha(alpha_idx, k_alpha, alpha*RAD_TO_DEG);
+      param::coeff::get_idx_Re(Re_idx, k_Re, U*c_[i]*INV_KINEMATIC_VISCOSITY);
+
+      flow_vx_[i] = vx;
+      flow_vz_[i] = vz;
+      flow_speed_[i] = U;
+      flow_alpha_[i] = alpha;
+    }
+    else {
+      U = flow_speed_[i];
+      if (U <= 0.0) {
+        dynamic_stall.alpha_initialized = false;
+        continue;
+      }
+      vx = flow_vx_[i];
+      vz = flow_vz_[i];
+      alpha = flow_alpha_[i];
+      param::coeff::get_idx_alpha(alpha_idx, k_alpha, alpha*RAD_TO_DEG);
+      param::coeff::get_idx_Re(Re_idx, k_Re, U*c_[i]*INV_KINEMATIC_VISCOSITY);
+    }
 
     const double c = c_[i];
-    const double Re = U*c*INV_KINEMATIC_VISCOSITY;
-    std::size_t Re_idx;
-    double k_Re;
-    param::coeff::get_idx_Re(Re_idx, k_Re, Re);
+    const bool valid_gk_sample = U >= GK_MIN_SPEED;
+    const double state_alpha = valid_gk_sample || !dynamic_stall.state_initialized ? alpha : dynamic_stall.alpha;
+    const double neutral_X = X0[ZERO_ALPHA_IDX][Re_idx] + k_Re*(X0[ZERO_ALPHA_IDX][Re_idx+1]-X0[ZERO_ALPHA_IDX][Re_idx]);
+    std::array<double, 2> X_eq_surface = dynamic_stall.X_eq;
+
+    if (valid_gk_sample || !dynamic_stall.state_initialized) {
+      const double suction_X = param::coeff::bilinear_interpolate(X0, alpha_idx, Re_idx, k_alpha, k_Re);
+      if (state_alpha >= 0.0) {
+        X_eq_surface[UPPER_SURFACE] = suction_X;
+        X_eq_surface[LOWER_SURFACE] = neutral_X;
+      }
+      else {
+        X_eq_surface[UPPER_SURFACE] = neutral_X;
+        X_eq_surface[LOWER_SURFACE] = suction_X;
+      }
+    }
+
+    const bool advance_gk = valid_gk_sample && dynamic_stall.state_initialized && dynamic_stall.alpha_initialized;
+    if (valid_gk_sample && !dynamic_stall.state_initialized) {
+      dynamic_stall.X = X_eq_surface;
+      dynamic_stall.X_eq = X_eq_surface;
+      dynamic_stall.q_ss.fill(0.0);
+      dynamic_stall.D2.fill(0.0);
+      dynamic_stall.active.fill(false);
+      dynamic_stall.state_initialized = true;
+    }
+
+    if (advance_gk) {
+      double delta_alpha = alpha-dynamic_stall.alpha;
+      if (delta_alpha > PI) {delta_alpha -= TWO_PI;}
+      else if (delta_alpha < -PI) {delta_alpha += TWO_PI;}
+      const double alpha_dot = delta_alpha*phase_rate;
+      // The phase step is much larger than SIM_DT, so 1-exp(-x) retains
+      // double-precision accuracy here and is cheaper than expm1 on libm.
+      const double relaxation_gain = phase_rate > 0.0 ? 1.0-std::exp(-U/(phase_rate*GK_D1*c)) : 1.0;
+
+      const auto lookup_X0 = [&X0, Re_idx, k_Re](const double lookup_alpha) {
+        std::size_t lookup_idx;
+        double lookup_fraction;
+        param::coeff::get_idx_alpha(lookup_idx, lookup_fraction, lookup_alpha*RAD_TO_DEG);
+        return param::coeff::bilinear_interpolate(X0, lookup_idx, Re_idx, lookup_fraction, k_Re);
+      };
+
+      for (std::size_t surface=0; surface<2; ++surface) {
+        const double surface_sign = surface == UPPER_SURFACE ? 1.0 : -1.0;
+        const double beta = surface_sign*alpha;
+        const double beta_previous = surface_sign*dynamic_stall.alpha;
+        const double beta_dot = surface_sign*alpha_dot;
+        const double q = beta_dot*c/U;
+
+        if (!dynamic_stall.active[surface] && beta_dot > 0.0) {
+          const double* alpha_stall_table = surface == UPPER_SURFACE ? ALPHA_STALL_POS : ALPHA_STALL_NEG;
+          const double beta_stall = (alpha_stall_table[Re_idx] + k_Re*(alpha_stall_table[Re_idx+1]-alpha_stall_table[Re_idx]))*DEG_TO_RAD;
+          if (beta_previous < beta_stall && beta >= beta_stall) {
+            dynamic_stall.q_ss[surface] = std::max(q, 2.0e-6);
+            const double Kss = 0.5*dynamic_stall.q_ss[surface];
+            dynamic_stall.D2[surface] = std::min(0.0815*std::pow(Kss, -7.0/9.0) + GK_D1, GK_DSTALL_MAX);
+            dynamic_stall.active[surface] = true;
+          }
+        }
+
+        double target = X_eq_surface[surface];
+        if (dynamic_stall.active[surface]) {
+          const double beta_effective = beta - ((dynamic_stall.D2[surface]-GK_D1)*q + GK_D1*dynamic_stall.q_ss[surface]);
+          target = lookup_X0(surface_sign*std::max(beta_effective, 0.0));
+        }
+
+        dynamic_stall.X[surface] += relaxation_gain*(target-dynamic_stall.X[surface]);
+        dynamic_stall.X[surface] = std::clamp(dynamic_stall.X[surface], 0.0, 1.0);
+
+        if (dynamic_stall.active[surface] && beta_dot < 0.0 && target >= std::max(0.0, neutral_X-GK_REATTACH_TOLERANCE)) {
+          dynamic_stall.active[surface] = false;
+          dynamic_stall.q_ss[surface] = 0.0;
+          dynamic_stall.D2[surface] = 0.0;
+        }
+      }
+      dynamic_stall.X_eq = X_eq_surface;
+    }
+    else if (valid_gk_sample) {dynamic_stall.X_eq = X_eq_surface;}
+
+    if (valid_gk_sample) {
+      dynamic_stall.alpha = alpha;
+      dynamic_stall.alpha_initialized = true;
+    }
+    else {dynamic_stall.alpha_initialized = false;}
+
+    if (!accumulate_load) {continue;}
+
+    double upper_weight;
+    if (state_alpha <= -GK_SURFACE_BLEND_ANGLE) {upper_weight = 0.0;}
+    else if (state_alpha >= GK_SURFACE_BLEND_ANGLE) {upper_weight = 1.0;}
+    else {
+      const double coordinate = 0.5*(state_alpha/GK_SURFACE_BLEND_ANGLE + 1.0);
+      upper_weight = coordinate*coordinate*(3.0-2.0*coordinate);
+    }
+
+    const std::array<double, 2>& effective_X_eq = dynamic_stall.state_initialized ? dynamic_stall.X_eq : X_eq_surface;
+    const double X_eq = upper_weight*effective_X_eq[UPPER_SURFACE] + (1.0-upper_weight)*effective_X_eq[LOWER_SURFACE];
+    const double X = dynamic_stall.state_initialized ? upper_weight*dynamic_stall.X[UPPER_SURFACE] + (1.0-upper_weight)*dynamic_stall.X[LOWER_SURFACE] : X_eq;
+    const double numerator = 1.0+std::sqrt(X);
+    const double denominator = 1.0+std::sqrt(X_eq);
+    const double kirchhoff_ratio = numerator*numerator/(denominator*denominator);
 
     const double Cd = param::coeff::bilinear_interpolate(CD, alpha_idx, Re_idx, k_alpha, k_Re);
-    const double Cl = param::coeff::bilinear_interpolate(CL, alpha_idx, Re_idx, k_alpha, k_Re);
+    const double Cl = param::coeff::bilinear_interpolate(CL, alpha_idx, Re_idx, k_alpha, k_Re)*kirchhoff_ratio;
     const double Cm = param::coeff::bilinear_interpolate(CM, alpha_idx, Re_idx, k_alpha, k_Re);
 
     const double k_f = HALF_RHO*U*area;
     const double Fx = k_f*(Cd*vx - Cl*vz);
     const double Fz = k_f*(Cd*vz + Cl*vx);
     const double My = k_f*U*c*Cm;
+    const Eigen::Matrix3d& bRsi = bRsi_[i];
     const Eigen::Vector3d bF = Fx*bRsi.col(0) + Fz*bRsi.col(2);
     const Eigen::Vector3d bM = (bp_ac_[i] - bpc).cross(bF) + My*bRsi.col(1);
 
