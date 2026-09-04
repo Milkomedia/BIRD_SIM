@@ -16,6 +16,9 @@ constexpr double INV_KINEMATIC_VISCOSITY = 1.0 / param::AIR_KINEMATIC_VISCOSITY;
 constexpr double MIN_VECTOR_NORM2 = 1.0e-20;
 constexpr double MIN_FLOW_SPEED2 = 1.0e-12;
 
+constexpr std::array<double, 6> INPUT_LOWER_BOUNDS = {0.0, 0.0, -param::MAX_FLAPPING_DIFFERENCE, 0.0, -param::MAX_PITCHING_DIFFERENCE, -param::MAX_SWEEP_BIAS};
+constexpr std::array<double, 6> INPUT_UPPER_BOUNDS = {param::MAX_FREQ, param::MAX_FLAPPING_AMPLITUDE, param::MAX_FLAPPING_DIFFERENCE, param::MAX_PITCHING_AMPLITUDE, param::MAX_PITCHING_DIFFERENCE, param::MAX_SWEEP_BIAS};
+
 inline void waveform(double r, double f, double& cos_r1, double& sin_r1, double& cos_r1_dot, double& sin_r1_dot, double& one_minus_cos_r2, double& one_minus_cos_r2_dot) noexcept {
   if (r < param::R1) {
     const double angle = PI * r / param::R1;
@@ -93,26 +96,81 @@ inline void update_projected_phi(double& phi, double& phi_dot, const Eigen::Vect
 
 } // namespace
 
-void Mixer::reset() noexcept {
-  wrench_.setZero();
-}
-
-const Eigen::Matrix<double, 6, 1>& Mixer::update(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept {
+Eigen::Matrix<double, 6, 1> Mixer::forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept {
   rebuild_kinematics(prev_input);
 
-  wrench_.setZero();
-
+  Eigen::Matrix<double, 6, 1> wrench = Eigen::Matrix<double, 6, 1>::Zero();
   const Eigen::Vector3d RtVrel = state.R.transpose()*(state.vel_f-state.vel);
 
-  accumulate_range(0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM);
-  accumulate_range(RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM);
-  accumulate_range(MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM);
-  wrench_ *= 1.0 / static_cast<double>(N_PHASE);
+  accumulate_wrench(wrench, 0, HUMERUS_SAMPLE_COUNT, RtVrel, state.w, state.bpc, param::coeff::NACA_CD, param::coeff::NACA_CL, param::coeff::NACA_CM);
+  accumulate_wrench(wrench, RADIUS_SAMPLE_BEGIN, MANUS_SAMPLE_BEGIN, RtVrel, state.w, state.bpc, param::coeff::S20_CD, param::coeff::S20_CL, param::coeff::S20_CM);
+  accumulate_wrench(wrench, MANUS_SAMPLE_BEGIN, TOTAL_SAMPLES, RtVrel, state.w, state.bpc, param::coeff::S40_CD, param::coeff::S40_CL, param::coeff::S40_CM);
+  wrench *= 1.0 / static_cast<double>(N_PHASE);
 
-  return wrench_;
+  return wrench;
 }
 
-void Mixer::accumulate_range(const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept {
+void Mixer::update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input, Eigen::Matrix<double, 6, 6>& B, Eigen::Matrix<double, 6, 1>& nominal_wrench) noexcept {
+
+  nominal_wrench = forward(state, prev_input);
+  B.setZero();
+
+  for (Eigen::Index input_idx=0; input_idx<6; ++input_idx) {
+    const double lower = INPUT_LOWER_BOUNDS[static_cast<std::size_t>(input_idx)];
+    const double upper = INPUT_UPPER_BOUNDS[static_cast<std::size_t>(input_idx)];
+    const double step = param::MIXER_B_FD_FRACTION*(upper-lower);
+    const double input = prev_input(input_idx);
+    Eigen::Matrix<double, 6, 1> derivative = Eigen::Matrix<double, 6, 1>::Zero();
+
+    if (input-step >= lower && input+step <= upper) {
+      Eigen::Matrix<double, 6, 1> plus_input = prev_input;
+      Eigen::Matrix<double, 6, 1> minus_input = prev_input;
+      plus_input(input_idx) += step;
+      minus_input(input_idx) -= step;
+      const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input);
+      const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input);
+      derivative = (plus_wrench-minus_wrench)/(2.0*step);
+    }
+    else if (input+2.0*step <= upper) {
+      // Second-order forward difference at a lower input bound.
+      Eigen::Matrix<double, 6, 1> first_input = prev_input;
+      Eigen::Matrix<double, 6, 1> second_input = prev_input;
+      first_input(input_idx) += step;
+      second_input(input_idx) += 2.0*step;
+      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input);
+      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input);
+      derivative = (-3.0*nominal_wrench+4.0*first_wrench-second_wrench)/(2.0*step);
+    }
+    else if (input-2.0*step >= lower) {
+      // Second-order backward difference at an upper input bound.
+      Eigen::Matrix<double, 6, 1> first_input = prev_input;
+      Eigen::Matrix<double, 6, 1> second_input = prev_input;
+      first_input(input_idx) -= step;
+      second_input(input_idx) -= 2.0*step;
+      const Eigen::Matrix<double, 6, 1> first_wrench = forward(state, first_input);
+      const Eigen::Matrix<double, 6, 1> second_wrench = forward(state, second_input);
+      derivative = (3.0*nominal_wrench-4.0*first_wrench+second_wrench)/(2.0*step);
+    }
+    else {
+      // Defensive fallback for a future input range narrower than two steps.
+      const double plus = std::min(input+step, upper);
+      const double minus = std::max(input-step, lower);
+      if (plus > minus) {
+        Eigen::Matrix<double, 6, 1> plus_input = prev_input;
+        Eigen::Matrix<double, 6, 1> minus_input = prev_input;
+        plus_input(input_idx) = plus;
+        minus_input(input_idx) = minus;
+        const Eigen::Matrix<double, 6, 1> plus_wrench = forward(state, plus_input);
+        const Eigen::Matrix<double, 6, 1> minus_wrench = forward(state, minus_input);
+        derivative = (plus_wrench-minus_wrench)/(plus-minus);
+      }
+    }
+
+    B.col(input_idx) = derivative;
+  }
+}
+
+void Mixer::accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, const std::size_t begin, const std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept {
   for (std::size_t i=begin; i<end; ++i) {
     const double area = area_[i];
     if (area <= 0.0) {continue;}
@@ -149,8 +207,8 @@ void Mixer::accumulate_range(const std::size_t begin, const std::size_t end, con
     const Eigen::Vector3d bF = Fx*bRsi.col(0) + Fz*bRsi.col(2);
     const Eigen::Vector3d bM = (bp_ac_[i] - bpc).cross(bF) + My*bRsi.col(1);
 
-    wrench_.head<3>() += bF;
-    wrench_.tail<3>() += bM;
+    wrench.head<3>() += bF;
+    wrench.tail<3>() += bM;
   }
 }
 

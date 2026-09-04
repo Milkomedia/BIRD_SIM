@@ -24,11 +24,10 @@ public:
   static constexpr std::size_t NM = (param::NM + NSTRIP_REDUCTION - 1) / NSTRIP_REDUCTION;
   static constexpr std::size_t TOTAL_SAMPLES  = 2*(NH + NR + NM) * N_PHASE;
 
-  Mixer() noexcept {reset();}
-  void reset() noexcept;
+  Mixer() noexcept {}
 
-  // prev_input = [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep].
-  const Eigen::Matrix<double, 6, 1>& update(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
+  // B rows = [Fx, Fy, Fz, Mx, My, Mz], columns follow prev_input.
+  void update_B(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input, Eigen::Matrix<double, 6, 6>& B, Eigen::Matrix<double, 6, 1>& nominal_wrench) noexcept;
 
 private:
   static constexpr std::size_t HUMERUS_SAMPLE_COUNT = 2 * N_PHASE * NH;
@@ -37,17 +36,17 @@ private:
   static constexpr std::size_t RADIUS_SAMPLE_BEGIN = HUMERUS_SAMPLE_COUNT;
   static constexpr std::size_t MANUS_SAMPLE_BEGIN = HUMERUS_SAMPLE_COUNT + RADIUS_SAMPLE_COUNT;
 
-  // Cached strip kinematics; all vectors and rotations are expressed in body FRD.
+  // Cached strip kinematics; forward() scratch storage only
   std::array<Eigen::Vector3d, TOTAL_SAMPLES> bp_ac_{};
   std::array<Eigen::Vector3d, TOTAL_SAMPLES> bv_ac_{};
   std::array<Eigen::Matrix3d, TOTAL_SAMPLES> bRsi_{};
   std::array<double, TOTAL_SAMPLES> c_{};
   std::array<double, TOTAL_SAMPLES> area_{};
 
-  Eigen::Matrix<double, 6, 1> wrench_ = Eigen::Matrix<double, 6, 1>::Zero();
-
+  // prev_input = [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep].
+  Eigen::Matrix<double, 6, 1> forward(const State& state, const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
   void rebuild_kinematics(const Eigen::Matrix<double, 6, 1>& prev_input) noexcept;
-  void accumulate_range(std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept;
+  void accumulate_wrench(Eigen::Matrix<double, 6, 1>& wrench, std::size_t begin, std::size_t end, const Eigen::Vector3d& RtVrel, const Eigen::Vector3d& b_omega, const Eigen::Vector3d& bpc, const double (&CD)[176][14], const double (&CL)[176][14], const double (&CM)[176][14]) noexcept;
 
   static inline void rotate_x(Eigen::Matrix3d& rotation, const double angle) noexcept {
     const double c = std::cos(angle);

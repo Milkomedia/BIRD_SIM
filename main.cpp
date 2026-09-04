@@ -182,7 +182,6 @@ int main(int argc, char** argv) {
         mj_forward(m, sim_data);
         for (Actuator::Servo& item : servo) {item.reset();}
         mst.reset();
-        mixer.reset();
         mj_utils::g_manus_trajectory.reset();
         applied_aero_pos.fill(Eigen::Vector3d::Zero());
         applied_aero_force.fill(Eigen::Vector3d::Zero());
@@ -294,24 +293,35 @@ int main(int argc, char** argv) {
           FK(sim_state.theta, sim_state.bTj);
           update_state_estimate(s, sim_state);
 
-          // --- Control allocation ---
-          const Eigen::Matrix<double, 6, 1>& estimated_wrench = mixer.update(s, cmd.u);
-          // Future automatic control-allocation and joint-trajectory logic goes here.
+          // --- Flight-control loop: once every five simulation steps ---
+          Eigen::Matrix<double, 6, 6> B;
+          Eigen::Matrix<double, 6, 1> w_hat;
+          if (sim_step % 5 == 0) {
+            // B rows: [Fx, Fy, Fz, Mx, My, Mz]
+            // B cols: [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep]
+            mixer.update_B(s, cmd.u, B, w_hat);
+
+            // std::printf(
+            //   "[Mixer] mean F=[%.6g %.6g %.6g],  M=[%.6g %.6g %.6g],  ||B||_F=%.6g\n",
+            //   w_hat(0), w_hat(1), w_hat(2),
+            //   w_hat(3), w_hat(4), w_hat(5),
+            //   B.norm()
+            // );
+            // std::printf("\n|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(0,0), B(0,1), B(0,2), B(0,3), B(0,4), B(0,5));
+            // std::printf("|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(1,0), B(1,1), B(1,2), B(1,3), B(1,4), B(1,5));
+            // std::printf("|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(2,0), B(2,1), B(2,2), B(2,3), B(2,4), B(2,5));
+            // std::printf("|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(3,0), B(3,1), B(3,2), B(3,3), B(3,4), B(3,5));
+            // std::printf("|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(4,0), B(4,1), B(4,2), B(4,3), B(4,4), B(4,5));
+            // std::printf("|%.6g %.6g %.6g %.6g %.6g %.6g|\n", B(5,0), B(5,1), B(5,2), B(5,3), B(5,4), B(5,5));
+
+            // Future incremental-QP allocation and joint-trajectory logic goes here.
+          }
 
           // Manual mode has final authority over any automatic joint command.
           if (manual_mode) {cmd.theta = elrs_theta;}
 
           elrs_flapping_phase += 2.0 * M_PI * cmd.u(0) * param::SIM_DT_SEC;
           if (elrs_flapping_phase >= 2.0 * M_PI) {elrs_flapping_phase -= 2.0 * M_PI;}
-
-          constexpr std::uint64_t MIXER_PRINT_DECIMATION = 500; // 10 Hz at 5 kHz simulation rate
-          if ((sim_step+1) % MIXER_PRINT_DECIMATION == 0) {
-            std::printf(
-              "[Mixer] mean F=[%.6g %.6g %.6g],  M=[%.6g %.6g %.6g]\n",
-              estimated_wrench(0), estimated_wrench(1), estimated_wrench(2),
-              estimated_wrench(3), estimated_wrench(4), estimated_wrench(5)
-            );
-          }
 
           // Servo is simulator-agnostic: feed it only the joint state.
           for (std::size_t i=0; i<param::NUM_JOINTS; ++i) {

@@ -28,6 +28,8 @@ namespace param {
   constexpr double MAX_PITCHING_AMPLITUDE  = M_PI / 4.0; // max mean pitching amplitude [rad]
   constexpr double MAX_PITCHING_DIFFERENCE = M_PI / 8.0; // max pitching amplitude difference [rad]
   constexpr double MAX_SWEEP_BIAS = M_PI / 4.0; // max sweep bias [rad]
+  inline constexpr double MIXER_B_FD_FRACTION = 1.0e-3; // fraction of each input range
+  static_assert(MIXER_B_FD_FRACTION > 0.0, "The Mixer finite-difference fraction must be positive.");
 
   // ----- model topology -----
   inline constexpr std::size_t NUM_WING_JOINTS_PER_WING = 6;
