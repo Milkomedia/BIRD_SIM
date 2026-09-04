@@ -216,12 +216,12 @@ int main(int argc, char** argv) {
         manual_mode = (elrs_channels[5] == 1810);
         if (manual_mode) {
           // ELRS MIN = 172, MAX = 1810.
-          cmd.u(0) = param::MAX_FREQ * static_cast<double>(elrs_channels[10]- 172) / 1638.0; // flapping_frequency
-          cmd.u(1) = param::MAX_FLAPPING_AMPLITUDE * static_cast<double>(elrs_channels[2]- 172) / 1638.0; // mean_flapping_amplitude
-          cmd.u(2) = param::MAX_FLAPPING_DIFFERENCE * (static_cast<double>(elrs_channels[0]) - 992.0) / (elrs_channels[0] < 992 ? 820.0 : 818.0); // flapping_difference
-          cmd.u(3) = param::MAX_PITCHING_AMPLITUDE * static_cast<double>(elrs_channels[1]- 172) / 1638.0; // pitching_amplitude
-          cmd.u(4) = param::MAX_PITCHING_DIFFERENCE * (static_cast<double>(elrs_channels[3]) - 992.0) / (elrs_channels[3] < 992 ? 820.0 : 818.0); // pitching_difference
-          cmd.u(5) = param::MAX_SWEEP_BIAS * (static_cast<double>(elrs_channels[11]) - 992.0) / (elrs_channels[11] < 992 ? 820.0 : 818.0); // sweep_bias
+          cmd.u(0) = param::MIN_FREQ + (param::MAX_FREQ - param::MIN_FREQ) * static_cast<double>(elrs_channels[10] - 172) / 1638.0; // flapping_frequency
+          cmd.u(1) = param::MIN_FLAPPING_AMPLITUDE + (param::MAX_FLAPPING_AMPLITUDE - param::MIN_FLAPPING_AMPLITUDE) * static_cast<double>(elrs_channels[2] - 172) / 1638.0; // mean_flapping_amplitude
+          cmd.u(2) = elrs_channels[0] < 992 ? param::MIN_FLAPPING_DIFFERENCE * (992.0 - static_cast<double>(elrs_channels[0])) / 820.0 : param::MAX_FLAPPING_DIFFERENCE * (static_cast<double>(elrs_channels[0]) - 992.0) / 818.0; // flapping_difference
+          cmd.u(3) = param::MIN_PITCHING_AMPLITUDE + (param::MAX_PITCHING_AMPLITUDE - param::MIN_PITCHING_AMPLITUDE) * static_cast<double>(elrs_channels[1] - 172) / 1638.0; // pitching_amplitude
+          cmd.u(4) = elrs_channels[3] < 992 ? param::MIN_PITCHING_DIFFERENCE * (992.0 - static_cast<double>(elrs_channels[3])) / 820.0 : param::MAX_PITCHING_DIFFERENCE * (static_cast<double>(elrs_channels[3]) - 992.0) / 818.0; // pitching_difference
+          cmd.u(5) = param::MIN_SWEEP_BIAS + (param::MAX_SWEEP_BIAS - param::MIN_SWEEP_BIAS) * static_cast<double>(elrs_channels[11] - 172) / 1638.0; // sweep_bias
 
           const double cycle_ratio = elrs_flapping_phase / (2.0 * M_PI);
           double cosR1; double sinR1;

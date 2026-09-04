@@ -24,7 +24,7 @@ constexpr double GK_SURFACE_BLEND_ANGLE = DEG_TO_RAD;
 constexpr double GK_REATTACH_TOLERANCE = 0.02;
 constexpr std::size_t ZERO_ALPHA_IDX = 50;
 
-constexpr std::array<double, 6> INPUT_LOWER_BOUNDS = {0.0, 0.0, -param::MAX_FLAPPING_DIFFERENCE, 0.0, -param::MAX_PITCHING_DIFFERENCE, -param::MAX_SWEEP_BIAS};
+constexpr std::array<double, 6> INPUT_LOWER_BOUNDS = {param::MIN_FREQ, param::MIN_FLAPPING_AMPLITUDE, param::MIN_FLAPPING_DIFFERENCE, param::MIN_PITCHING_AMPLITUDE, param::MIN_PITCHING_DIFFERENCE, param::MIN_SWEEP_BIAS};
 constexpr std::array<double, 6> INPUT_UPPER_BOUNDS = {param::MAX_FREQ, param::MAX_FLAPPING_AMPLITUDE, param::MAX_FLAPPING_DIFFERENCE, param::MAX_PITCHING_AMPLITUDE, param::MAX_PITCHING_DIFFERENCE, param::MAX_SWEEP_BIAS};
 
 inline void waveform(double r, double f, double& cos_r1, double& sin_r1, double& cos_r1_dot, double& sin_r1_dot, double& one_minus_cos_r2, double& one_minus_cos_r2_dot) noexcept {

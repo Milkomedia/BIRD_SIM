@@ -24,13 +24,19 @@ namespace param {
   inline constexpr double SWEEP_AMPLITUDE   =  10.0 * M_PI / 180.0; // [rad]
   inline constexpr double FOLDING_AMPLITUDE =  22.5 * M_PI / 180.0; // [rad]
 
-  inline constexpr double MAX_FREQ = 6.0; // [Hz]
-  inline constexpr double MAX_FLAPPING_AMPLITUDE  = 3.0 * M_PI / 8.0; // max mean flapping amplitude [rad]
-  inline constexpr double MAX_FLAPPING_DIFFERENCE = M_PI / 4.0; // max flapping amplitude difference [rad]
-  inline constexpr double MAX_PITCHING_AMPLITUDE  = M_PI / 4.0; // max mean pitching amplitude [rad]
-  inline constexpr double MAX_PITCHING_DIFFERENCE = M_PI / 8.0; // max pitching amplitude difference [rad]
-  inline constexpr double MAX_SWEEP_BIAS = M_PI / 8.0; // max sweep bias [rad]
-  inline constexpr double MIXER_B_FD_FRACTION = 1.0e-3; // fraction of each input range
+  inline constexpr double MIN_FREQ = 1.5; // [Hz]
+  inline constexpr double MAX_FREQ = 4.0;
+  inline constexpr double MIN_FLAPPING_AMPLITUDE  = 0.8 * M_PI / 8.0; // mean flapping amplitude [rad]
+  inline constexpr double MAX_FLAPPING_AMPLITUDE  = 3.0 * M_PI / 8.0;
+  inline constexpr double MIN_FLAPPING_DIFFERENCE = 0.0;              // flapping amplitude difference [rad]
+  inline constexpr double MAX_FLAPPING_DIFFERENCE = M_PI / 4.0;
+  inline constexpr double MIN_PITCHING_AMPLITUDE  = 0.0;              // mean pitching amplitude [rad]
+  inline constexpr double MAX_PITCHING_AMPLITUDE  = M_PI / 4.0;
+  inline constexpr double MIN_PITCHING_DIFFERENCE = 0.0;              // pitching amplitude difference [rad]
+  inline constexpr double MAX_PITCHING_DIFFERENCE = M_PI / 8.0;
+  inline constexpr double MIN_SWEEP_BIAS = 0.0;                       // sweep bias [rad]
+  inline constexpr double MAX_SWEEP_BIAS = M_PI / 8.0;
+  inline constexpr double MIXER_B_FD_FRACTION = 1e-3; // fraction of each input range
 
   // ----- model topology -----
   inline constexpr std::size_t NUM_WING_JOINTS_PER_WING = 6;

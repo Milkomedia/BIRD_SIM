@@ -13,8 +13,8 @@ struct State;
 
 class Mixer {
 public:
-  static constexpr std::size_t NSTRIP_REDUCTION = 3;
-  static constexpr std::size_t N_PHASE  = 16;
+  static constexpr std::size_t NSTRIP_REDUCTION = 4;
+  static constexpr std::size_t N_PHASE  = 8;
 
   static_assert(NSTRIP_REDUCTION > 0, "NSTRIP_REDUCTION must be greater than zero.");
   static_assert(N_PHASE > 0, "N_PHASE must be greater than zero.");
