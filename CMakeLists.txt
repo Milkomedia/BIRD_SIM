@@ -9,9 +9,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Prefer packages from the active Conda environment.
+if(DEFINED ENV{CONDA_PREFIX} AND NOT "$ENV{CONDA_PREFIX}" STREQUAL "")
+  list(PREPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
+endif()
+
 find_package(mujoco CONFIG REQUIRED PATHS "$ENV{HOME}/.local/mujoco")
 find_package(glfw3 CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
+find_package(proxsuite CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 add_executable(
@@ -21,6 +27,7 @@ add_executable(
   src/ELRS.cpp
   src/MST.cpp
   src/Mixer.cpp
+  src/ProxQP.cpp
   src/mmap_manager.cpp
 )
 
@@ -37,6 +44,7 @@ target_link_libraries(
     mujoco::mujoco
     glfw
     Eigen3::Eigen
+    proxsuite::proxsuite
     Threads::Threads
 )
 

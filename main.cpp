@@ -2,6 +2,7 @@
 #include "params.hpp"
 #include "MST.hpp"
 #include "Mixer.hpp"
+#include "ProxQP.hpp"
 #include "utils.hpp"
 #include "Servo.hpp"
 #include "ELRS.hpp"
@@ -137,6 +138,7 @@ int main(int argc, char** argv) {
 
     MST mst{};
     Mixer mixer{};
+    ProxQP proxqp;
     bird_mmap::MMapLogger mmap_logger{};
     mmap_logger.open();
     SimState sim_state{};
@@ -160,6 +162,7 @@ int main(int argc, char** argv) {
     std::uint64_t sim_step = 0;
     double sim_step_credit = 0.0;
     bool manual_mode = false;
+    std::uint64_t qp_failure_count = 0;
     std::chrono::steady_clock::duration snapshot_elapsed = std::chrono::steady_clock::duration::zero();
 
     std::chrono::steady_clock::time_point next_tick = std::chrono::steady_clock::now();
@@ -296,12 +299,17 @@ int main(int argc, char** argv) {
           // --- Flight-control loop: once every five simulation steps ---
           Eigen::Matrix<double, 6, 6> B;
           Eigen::Matrix<double, 6, 1> w_hat;
+          Eigen::Matrix<double, 6, 1> w_d;
           if (sim_step % 5 == 0) {
-            // B rows: [Fx, Fy, Fz, Mx, My, Mz]
-            // B cols: [f, Af_bar, Af_delta, Ap_bar, Ap_delta, sweep]
-            mixer.update_B(s, cmd.u, B, w_hat);
+            // Future Flight control logic here.
+            // w_d = ~~.
 
-            // Future incremental-QP allocation and joint-trajectory logic goes here.
+            mixer.update_B(s, cmd.u, B, w_hat);
+            
+            w_d = w_hat; // 임시
+
+            const Eigen::Matrix<double, 6, 1> w_error = w_d - w_hat;
+            if (!proxqp.solve(B, w_error, cmd.u)) {++qp_failure_count;}
           }
 
           // Manual mode has final authority over any automatic joint command.

@@ -15,6 +15,13 @@ namespace param {
 
   inline constexpr bool DISABLE_WAGNER = true;
 
+  // ----- QP Parameters -----
+  inline constexpr double QP_FORCE_SCALE = 1.0;
+  inline constexpr double QP_MOMENT_SCALE = 0.1;
+  inline constexpr double QP_DELTA_WEIGHT = 1e-3;
+  inline constexpr double QP_EPS_ABS = 1e-5;
+  inline constexpr int QP_MAX_ITER = 100;
+
   // ----- Flapping Motion Parameters -----
   inline constexpr double R1 = 0.45;
   inline constexpr double R2 = 0.35;
