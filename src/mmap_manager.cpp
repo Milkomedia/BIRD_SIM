@@ -22,7 +22,7 @@ namespace bird_mmap {
 namespace {
 
 constexpr char MAGIC[8] = {'B', 'I', 'R', 'D', 'L', 'O', 'G', '1'};
-constexpr std::uint32_t VERSION = 2;
+constexpr std::uint32_t VERSION = 3;
 constexpr std::uint8_t DTYPE_FLOAT32 = 1;
 
 static_assert(NUM_SEGMENTS+1 == MST::NUM_AERO_LOADS, "MST and mmap aerodynamic load counts differ.");
@@ -38,6 +38,15 @@ static_assert(NUM_STRIPS == MST::NUM_STRIPS, "MST and mmap strip counts differ."
   X("cmd.vel",                      "m/s",     "world NED", offsetof(SampleData, cmd_vel),                    3, 1) \
   X("cmd.R",                        "1",       "FRD->NED",  offsetof(SampleData, cmd_R),                      3, 3) \
   X("cmd.w",                        "rad/s",   "body FRD",  offsetof(SampleData, cmd_w),                      3, 1) \
+  X("qp.wrench_residual",           "mixed",   "body FRD",  offsetof(SampleData, qp_wrench_residual),         6, 1) \
+  X("qp.delta_u",                   "mixed",   "mixer",     offsetof(SampleData, qp_delta_u),                 6, 1) \
+  X("cmd.u",                        "mixed",   "mixer",     offsetof(SampleData, cmd_u),                      6, 1) \
+  X("qp.default_input",             "mixed",   "mixer",     offsetof(SampleData, qp_default_input),           6, 1) \
+  X("qp.solve_us",                 "us",      "solver",    offsetof(SampleData, qp_solve_us),                 1, 1) \
+  X("qp.solved",                   "status",  "solver",    offsetof(SampleData, qp_solved),                   1, 1) \
+  X("sim.phase",                    "enum",     "control",   offsetof(SampleData, phase),                       1, 1) \
+  X("qp.wrench_bar",                "mixed",   "body FRD",  offsetof(SampleData, qp_wrench_bar),              6, 1) \
+  X("mst.wrench",                   "mixed",   "body FRD",  offsetof(SampleData, mst_wrench),                 6, 1) \
   X("cmd.theta_t",                  "rad",     "tail",      offsetof(SampleData, cmd_theta_t),                1, 1) \
   X("joint.theta",                  "rad",     "joint",     offsetof(SampleData, joint_theta),                NUM_JOINTS, 1) \
   X("joint.theta_dot",              "rad/s",   "joint",     offsetof(SampleData, joint_theta_dot),            NUM_JOINTS, 1) \
@@ -210,7 +219,7 @@ void MMapLogger::close() {
   map_size_ = 0;
 }
 
-void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
+void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const Phase& phase, const Eigen::Matrix<double, 6, 1>& qp_wrench_residual, const Eigen::Matrix<double, 6, 1>& qp_delta_u, const Eigen::Matrix<double, 6, 1>& qp_wrench_bar, double qp_solve_us, int qp_solved, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque) {
   if (!base_) {open();}
 
   const std::uint64_t write_count = atomic_load(&header_->write_count);
@@ -230,6 +239,16 @@ void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch
   copy_vector(data.cmd_pos, cmd.pos);
   copy_vector(data.cmd_vel, cmd.vel);
   copy_vector(data.cmd_w, cmd.w);
+  for (std::size_t i=0; i<6; ++i) {
+    data.qp_wrench_residual[i] = static_cast<float>(qp_wrench_residual(i));
+    data.qp_delta_u[i] = static_cast<float>(qp_delta_u(i));
+    data.cmd_u[i] = static_cast<float>(cmd.u(i));
+    data.qp_default_input[i] = static_cast<float>(param::QP_DEFAULT_INPUT[i]);
+    data.qp_wrench_bar[i] = static_cast<float>(qp_wrench_bar(i));
+  }
+  data.qp_solve_us = static_cast<float>(qp_solve_us);
+  data.qp_solved = static_cast<float>(qp_solved);
+  data.phase = static_cast<float>(phase.type);
   data.cmd_theta_t = static_cast<float>(cmd.theta_t);
   for (std::size_t row=0; row<3; ++row) {
     for (std::size_t col=0; col<3; ++col) {
@@ -256,6 +275,13 @@ void MMapLogger::push(double time, std::uint64_t step, std::uint64_t reset_epoch
   copy_vector(data.body_elipsoid_pos, aero_pos.back());
   copy_vector(data.body_elipsoid_force, aero_force.back());
   copy_vector(data.body_elipsoid_torque, aero_torque.back());
+
+  Eigen::Matrix<double, 6, 1> mst_wrench = Eigen::Matrix<double, 6, 1>::Zero();
+  for (std::size_t i=0; i<MST::NUM_AERO_LOADS; ++i) {
+    mst_wrench.head<3>() += aero_force[i];
+    mst_wrench.tail<3>() += aero_torque[i] + (aero_pos[i]-s.bpc).cross(aero_force[i]);
+  }
+  for (std::size_t i=0; i<6; ++i) {data.mst_wrench[i] = static_cast<float>(mst_wrench(i));}
 
   const MST::AeroTelemetry& aero = mst.aero_telemetry();
   copy_scalar(data.strip_alpha, aero.alpha);

@@ -10,6 +10,7 @@
 
 struct SimState;
 struct Command;
+struct Phase;
 class MST;
 
 namespace bird_mmap {
@@ -40,6 +41,15 @@ struct SampleData {
   float cmd_vel[3]{};
   float cmd_R[9]{};
   float cmd_w[3]{};
+  float qp_wrench_residual[6]{};
+  float qp_delta_u[6]{};
+  float cmd_u[6]{};
+  float qp_default_input[6]{};
+  float qp_wrench_bar[6]{};
+  float qp_solve_us = 0.0f;
+  float qp_solved = -1.0f; // Status of the entire logging interval.
+  float phase = 0.0f;      // Phase::Type serialized as float32.
+  float mst_wrench[6]{};
   float cmd_theta_t = 0.0f;
 
   float joint_theta[NUM_JOINTS]{};
@@ -149,7 +159,7 @@ public:
 
   void open();
   void close();
-  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
+  void push(double time, std::uint64_t step, std::uint64_t reset_epoch, const SimState& s, const Command& cmd, const Phase& phase, const Eigen::Matrix<double, 6, 1>& qp_wrench_residual, const Eigen::Matrix<double, 6, 1>& qp_delta_u, const Eigen::Matrix<double, 6, 1>& qp_wrench_bar, double qp_solve_us, int qp_solved, const MST& mst, const std::array<double, NUM_JOINTS>& servo_torque, const std::array<double, NUM_JOINTS>& damping_torque);
 
 private:
   std::string path_;

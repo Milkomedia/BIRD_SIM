@@ -2,9 +2,11 @@
 
 #include "params.hpp"
 #include "MST.hpp"
+#include "ELRS.hpp"
 
 #include <mujoco/mujoco.h>
 #include <vector>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -34,8 +36,19 @@ struct Command {
   Eigen::Matrix<double, 6, 1> u = (Eigen::Matrix<double, 6, 1>() << param::MIN_FREQ, param::MIN_FLAPPING_AMPLITUDE, 0.0, param::MIN_PITCHING_AMPLITUDE, 0.0, 0.0).finished();
 
   // Joint control
-  std::array<double, param::NUM_JOINTS> theta{};       // [rad]
-  double theta_t = 0.0;                                // [rad]
+  std::array<double, param::NUM_JOINTS> theta = param::INITIAL_DES_THETA; // [rad]
+  double theta_t = 0.0; // [rad]
+};
+
+struct Phase {
+  enum Type : std::uint8_t {
+    PAUSED = 0,
+    JOINT_MANUAL = 1,
+    INPUT_MANUAL = 2,
+    WRENCH_MANUAL = 3
+  };
+
+  Type type = JOINT_MANUAL;
 };
 
 struct SimState {
@@ -59,7 +72,6 @@ struct ViewerData {
   mjtNum theta_t = 0.0;
   mjtNum sim_speed = 1.0; // [0, 1], simulation time / wall time
   mjvPerturb perturb{};
-  bool paused = false;
   std::uint64_t reset_epoch = 0;
 };
 
@@ -215,6 +227,71 @@ static inline void FK(const std::array<double, param::NUM_JOINTS>& theta, std::a
 }
 
 static inline double J5_model(const double J3) {return -0.1356*J3*J3*J3 - 0.2059*J3*J3 + 0.1409*J3 + 0.1719;}
+
+static inline void update_elrs_command(const ELRS::Channels& channels, const Phase& phase, Command& cmd, Eigen::Matrix<double, 6, 1>& wrench_bar) noexcept {
+  const double ch0  = std::clamp(static_cast<double>(channels[0]),  param::ELRS_MIN, param::ELRS_MAX);
+  const double ch1  = std::clamp(static_cast<double>(channels[1]),  param::ELRS_MIN, param::ELRS_MAX);
+  const double ch2  = std::clamp(static_cast<double>(channels[2]),  param::ELRS_MIN, param::ELRS_MAX);
+  const double ch3  = std::clamp(static_cast<double>(channels[3]),  param::ELRS_MIN, param::ELRS_MAX);
+  const double ch10 = std::clamp(static_cast<double>(channels[10]), param::ELRS_MIN, param::ELRS_MAX);
+  const double ch11 = std::clamp(static_cast<double>(channels[11]), param::ELRS_MIN, param::ELRS_MAX);
+
+  const double s0  = ch0  < param::ELRS_CENTER ? (ch0 -param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch0 -param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+  const double s1  = ch1  < param::ELRS_CENTER ? (ch1 -param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch1 -param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+  const double s2  = ch2  < param::ELRS_CENTER ? (ch2 -param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch2 -param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+  const double s3  = ch3  < param::ELRS_CENTER ? (ch3 -param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch3 -param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+  const double s10 = ch10 < param::ELRS_CENTER ? (ch10-param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch10-param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+  const double s11 = ch11 < param::ELRS_CENTER ? (ch11-param::ELRS_CENTER)/(param::ELRS_CENTER-param::ELRS_MIN) : (ch11-param::ELRS_CENTER)/(param::ELRS_MAX-param::ELRS_CENTER);
+
+  wrench_bar(0) = param::ELRS_WRENCH_FX_AT_MIN + (param::ELRS_WRENCH_FX_AT_MAX-param::ELRS_WRENCH_FX_AT_MIN)*0.5*(s10+1.0); // Fx [N]
+  wrench_bar(1) = 0.0;                                                                                               // Fy [N]
+  wrench_bar(2) = param::ELRS_WRENCH_FZ_AT_MIN + (param::ELRS_WRENCH_FZ_AT_MAX-param::ELRS_WRENCH_FZ_AT_MIN)*0.5*(s2+1.0);   // Fz [N]
+  wrench_bar(3) = param::ELRS_WRENCH_MX_MAX*s3;                                                                       // Mx [N.m]
+  wrench_bar(4) = param::ELRS_WRENCH_MY_MAX*s1;                                                                       // My [N.m]
+  wrench_bar(5) = param::ELRS_WRENCH_MZ_MAX*s0;                                                                       // Mz [N.m]
+
+  if (phase.type != Phase::INPUT_MANUAL) {return;}
+
+  cmd.u(0) = param::MIN_FREQ + (param::MAX_FREQ-param::MIN_FREQ)*0.5*(s10+1.0);
+  cmd.u(1) = param::MIN_FLAPPING_AMPLITUDE + (param::MAX_FLAPPING_AMPLITUDE-param::MIN_FLAPPING_AMPLITUDE)*0.5*(s2+1.0);
+  cmd.u(2) = param::MAX_FLAPPING_DIFFERENCE*s0;
+  cmd.u(3) = param::MIN_PITCHING_AMPLITUDE + (param::MAX_PITCHING_AMPLITUDE-param::MIN_PITCHING_AMPLITUDE)*0.5*(s1+1.0);
+  cmd.u(4) = param::MAX_PITCHING_DIFFERENCE*s3;
+  cmd.u(5) = param::MIN_SWEEP_BIAS + (param::MAX_SWEEP_BIAS-param::MIN_SWEEP_BIAS)*0.5*(s11+1.0);
+}
+
+static inline void update_joint_command(Command& cmd, double& flapping_phase) noexcept {
+  const double cycle_ratio = flapping_phase/(2.0*M_PI);
+  double cosR1; double sinR1;
+  if (cycle_ratio < param::R1) {cosR1 = -std::cos(M_PI*cycle_ratio/param::R1); sinR1 = std::sin(M_PI*cycle_ratio/param::R1);}
+  else {cosR1 = std::cos(M_PI*(cycle_ratio-param::R1)/(1.0-param::R1)); sinR1 = std::sin(M_PI*(param::R1-cycle_ratio)/(1.0-param::R1));}
+  double one_minus_cosR2 = 0.0;
+  if (cycle_ratio > param::R2) {one_minus_cosR2 = 1.0-std::cos(2.0*M_PI*(cycle_ratio-param::R2)/(1.0-param::R2));}
+
+  const double flapping_right = param::FLAPPING_DELTA_0 + (cmd.u(1)+0.5*cmd.u(2))*cosR1;
+  const double flapping_left  = param::FLAPPING_DELTA_0 + (cmd.u(1)-0.5*cmd.u(2))*cosR1;
+  const double pitching_right = param::PITCHING_DELTA_0 + 0.5*(cmd.u(3)+0.5*cmd.u(4))*one_minus_cosR2;
+  const double pitching_left  = param::PITCHING_DELTA_0 + 0.5*(cmd.u(3)-0.5*cmd.u(4))*one_minus_cosR2;
+  const double sweep = cmd.u(5) + param::SWEEP_AMPLITUDE*sinR1;
+  const double folding = param::FOLDING_DELTA_0 + 0.5*param::FOLDING_AMPLITUDE*one_minus_cosR2;
+
+  cmd.theta[0] = param::INITIAL_DES_THETA[0] + flapping_right;
+  cmd.theta[1] = param::INITIAL_DES_THETA[1] + pitching_right;
+  cmd.theta[2] = param::INITIAL_DES_THETA[2] + sweep;
+  cmd.theta[3] = param::INITIAL_DES_THETA[3] + folding;
+  cmd.theta[4] = J5_model(cmd.theta[2]);
+  cmd.theta[5] = param::INITIAL_DES_THETA[5] - 2.0*folding;
+
+  cmd.theta[6]  = param::INITIAL_DES_THETA[6] + flapping_left;
+  cmd.theta[7]  = param::INITIAL_DES_THETA[7] + pitching_left;
+  cmd.theta[8]  = param::INITIAL_DES_THETA[8] + sweep;
+  cmd.theta[9]  = param::INITIAL_DES_THETA[9] + folding;
+  cmd.theta[10] = J5_model(cmd.theta[8]);
+  cmd.theta[11] = param::INITIAL_DES_THETA[11] - 2.0*folding;
+
+  flapping_phase += 2.0*M_PI*cmd.u(0)*param::SIM_DT_SEC;
+  if (flapping_phase >= 2.0*M_PI) {flapping_phase -= 2.0*M_PI;}
+}
 
 template <std::size_t N>
 inline void add_spatial_inertias(const mjModel* m, mjData* d, const std::array<Eigen::Vector3d, N>& local_positions, const std::array<Eigen::Matrix<double, 6, 6>, N>& local_spatial_inertias, const std::array<int, N>& body_ids, const Eigen::Matrix3d& world_R_body, const Eigen::Vector3d& world_p_body, mjtNum* jac, mjtNum* inertia_jac) {

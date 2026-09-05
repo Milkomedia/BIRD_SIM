@@ -19,13 +19,14 @@ import pyqtgraph as pg
 
 
 MAGIC = b"BIRDLOG1"
-VERSION = 2
-SUPPORTED_VERSIONS = (1, VERSION)
+VERSION = 3
+SUPPORTED_VERSIONS = (1, 2, VERSION)
 HEADER_SIZE = 128
 DESCRIPTOR_SIZE = 96
 DTYPE_FLOAT32 = 1
 RAD2DEG = np.float32(180.0 / np.pi)
-FORCE_AVERAGE_WINDOW_SEC = 1.0
+WRENCH_LPF_TIME_CONSTANT_SEC = 1.0
+WRENCH_LPF_WARMUP_TIME_CONSTANTS = 3.0
 AXES = ("x", "y", "z")
 SEGMENT_NAMES = ("RH", "RR", "RM", "LH", "LR", "LM", "RT", "LT")
 AGGREGATE_NAMES = SEGMENT_NAMES + ("Body",)
@@ -303,21 +304,17 @@ def rotation_to_rpy(rotation: np.ndarray) -> np.ndarray:
   return np.column_stack((roll, pitch, yaw)).astype(np.float32)*RAD2DEG
 
 
-def trailing_mean(values: np.ndarray, window_samples: int) -> np.ndarray:
-  window_samples = max(1, int(window_samples))
-  result = np.full(values.shape, np.nan, dtype=np.float32)
-  if values.shape[0] < window_samples:
-    return result
-
-  cumulative = np.empty((values.shape[0]+1, values.shape[1]), dtype=np.float64)
-  cumulative[0] = 0.0
-  np.cumsum(values, axis=0, dtype=np.float64, out=cumulative[1:])
-
-  end = np.arange(window_samples, values.shape[0]+1, dtype=np.int64)
-  start = end-window_samples
-  result[window_samples-1:] = (
-    (cumulative[end]-cumulative[start])/float(window_samples)
-  ).astype(np.float32)
+def first_order_low_pass(time: np.ndarray, values: np.ndarray, time_constant_sec: float) -> np.ndarray:
+  if values.shape[0] == 0: return values.copy()
+  result = np.empty_like(values, dtype=np.float32)
+  result[0] = values[0]
+  for index in range(1, time.size):
+    dt = float(time[index]-time[index-1])
+    if not np.isfinite(dt) or dt <= 0.0:
+      result[index] = values[index]
+      continue
+    alpha = -np.expm1(-dt/time_constant_sec)
+    result[index] = result[index-1] + alpha*(values[index]-result[index-1])
   return result
 
 
@@ -475,6 +472,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self._build_strip_flow_tab()
     self._build_strip_load_tab()
     self._build_aggregate_tab()
+    self._build_qp_tab()
     self._build_browser_tab()
 
   def _plot(self, graphics: pg.GraphicsLayoutWidget, row: int, col: int, title: str, unit: str = "", legend: bool = True, show_time_values: bool = True) -> pg.PlotItem:
@@ -543,21 +541,75 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.curves[f"flight.{group}.{axis}.state"] = plot.plot(pen=blue, name="state")
         self.curves[f"flight.{group}.{axis}.cmd"] = plot.plot(pen=red, name="cmd")
 
+  def _build_qp_tab(self) -> None:
+    graphics = pg.GraphicsLayoutWidget()
+    self.tabs.addTab(graphics, "QP")
+    residual_pen = pg.mkPen((160, 70, 180), width=2)
+    delta_pen = pg.mkPen((30, 90, 210), width=2)
+    input_pen = pg.mkPen((20, 150, 90), width=2)
+    default_pen = pg.mkPen((220, 50, 50), width=2, style=QtCore.Qt.DashLine)
+    zero_pen = pg.mkPen((100, 100, 100), width=1, style=QtCore.Qt.DotLine)
+    wrench_titles = (
+      ("<i>F</i><sub>x</sub><sup>B</sup>", "N"),
+      ("<i>F</i><sub>y</sub><sup>B</sup>", "N"),
+      ("<i>F</i><sub>z</sub><sup>B</sup>", "N"),
+      ("<i>M</i><sub>x</sub><sup>B</sup>", "N m"),
+      ("<i>M</i><sub>y</sub><sup>B</sup>", "N m"),
+      ("<i>M</i><sub>z</sub><sup>B</sup>", "N m")
+    )
+    delta_titles = (
+      ("&delta;<i>f</i>", "Hz"),
+      ("&delta;<span style='text-decoration: overline;'><i>A</i></span><sub>f</sub>", "rad"),
+      ("&delta;(&Delta;<i>A</i><sub>f</sub>)", "rad"),
+      ("&delta;<span style='text-decoration: overline;'><i>A</i></span><sub>p</sub>", "rad"),
+      ("&delta;(&Delta;<i>A</i><sub>p</sub>)", "rad"),
+      ("&delta;(<i>&delta;</i><sub>s0</sub>)", "rad")
+    )
+    input_titles = (
+      ("<i>f</i>", "Hz"),
+      ("<span style='text-decoration: overline;'><i>A</i></span><sub>f</sub>", "rad"),
+      ("&Delta;<i>A</i><sub>f</sub>", "rad"),
+      ("<span style='text-decoration: overline;'><i>A</i></span><sub>p</sub>", "rad"),
+      ("&Delta;<i>A</i><sub>p</sub>", "rad"),
+      ("<i>&delta;</i><sub>s0</sub>", "rad")
+    )
+    for component in range(6):
+      show_time_values = component == 5
+      wrench_plot = self._plot(graphics, component, 0, wrench_titles[component][0], wrench_titles[component][1], component == 0, show_time_values)
+      wrench_plot.addItem(pg.InfiniteLine(pos=0.0, angle=0, pen=zero_pen))
+      self.curves[f"qp_tuning.wrench_residual.{component}"] = wrench_plot.plot(pen=residual_pen, name=paper_text("<i>B</i>&Delta;<i>u</i> &minus; <i>w</i><sub>e</sub>", 10))
+
+      delta_plot = self._plot(graphics, component, 1, delta_titles[component][0], delta_titles[component][1], component == 0, show_time_values)
+      delta_plot.addItem(pg.InfiniteLine(pos=0.0, angle=0, pen=zero_pen))
+      self.curves[f"qp_tuning.delta_u.{component}"] = delta_plot.plot(pen=delta_pen, name=paper_text("&Delta;<i>u</i>", 10))
+
+      input_plot = self._plot(graphics, component, 2, input_titles[component][0], input_titles[component][1], component == 0, show_time_values)
+      self.curves[f"qp_tuning.input.{component}"] = input_plot.plot(pen=input_pen, name=paper_text("<i>u</i>", 10))
+      self.curves[f"qp_tuning.default_input.{component}"] = input_plot.plot(pen=default_pen, name=paper_text("<i>u</i><sub>0</sub>", 10))
+
+    self.qp_solve_plot = graphics.addPlot(row=6, col=0, colspan=3)
+    style_plot(self.qp_solve_plot, "solve us", "&mu;s", True)
+    self.curves["qp_tuning.solve_us"] = self.qp_solve_plot.plot(pen=delta_pen, connect="finite")
+    self.qp_fail_regions = []
+
   def _build_wrench_tab(self) -> None:
     graphics = pg.GraphicsLayoutWidget()
     self.tabs.addTab(graphics, "Wrench")
-    blue = pg.mkPen((30, 90, 210), width=2)
-    blue_dotted = pg.mkPen((30, 90, 210), width=2, style=QtCore.Qt.DotLine)
+    wrench_bar_pen = pg.mkPen((220, 50, 50), width=1.5, style=QtCore.Qt.DashLine)
+    current_pen = pg.mkPen((30, 90, 210), width=2.0)
+    lpf_pen = pg.mkPen((30, 90, 210), width=1.5, style=QtCore.Qt.DotLine)
     for axis, axis_name in enumerate(AXES):
-      plot = self._plot(graphics, 0, axis, f"<i>F</i><sub>{axis_name}</sub><sup>W</sup>", "N", False, False)
-      plot.setYRange(-25.0, 10.0, padding=0.0)
-      self.curves[f"wrench.aero_force.{axis}"] = plot.plot(pen=blue)
-      self.curves[f"wrench.aero_force_mean.{axis}"] = plot.plot(pen=blue_dotted)
+      force_plot = self._plot(graphics, 0, axis, f"<i>F</i><sub>{axis_name}</sub><sup>B</sup>", "N", axis == 0, False)
+      force_plot.setYRange(-25.0, 10.0, padding=0.0)
+      self.curves[f"wrench.bar.{axis}"] = force_plot.plot(pen=wrench_bar_pen, name=paper_text("wrench bar", 10))
+      self.curves[f"wrench.current.{axis}"] = force_plot.plot(pen=current_pen, name=paper_text("current", 10))
+      self.curves[f"wrench.lpf.{axis}"] = force_plot.plot(pen=lpf_pen, name=paper_text(f"cutoff {WRENCH_LPF_TIME_CONSTANT_SEC:g}s", 10))
 
-      plot = self._plot(graphics, 1, axis, f"<i>M</i><sub>{axis_name}</sub><sup>W</sup>", "N m", False, True)
-      plot.setYRange(-5.0, 5.0, padding=0.0)
-      self.curves[f"wrench.aero_moment.{axis}"] = plot.plot(pen=blue)
-      self.curves[f"wrench.aero_moment_mean.{axis}"] = plot.plot(pen=blue_dotted)
+      moment_plot = self._plot(graphics, 1, axis, f"<i>M</i><sub>{axis_name}</sub><sup>B</sup>", "N m", axis == 0, True)
+      moment_plot.setYRange(-5.0, 5.0, padding=0.0)
+      self.curves[f"wrench.bar.{axis+3}"] = moment_plot.plot(pen=wrench_bar_pen, name=paper_text("wrench bar", 10))
+      self.curves[f"wrench.current.{axis+3}"] = moment_plot.plot(pen=current_pen, name=paper_text("current", 10))
+      self.curves[f"wrench.lpf.{axis+3}"] = moment_plot.plot(pen=lpf_pen, name=paper_text(f"cutoff {WRENCH_LPF_TIME_CONSTANT_SEC:g}s", 10))
 
   def _build_joint_tab(self) -> None:
     joint_tabs = QtWidgets.QTabWidget()
@@ -694,11 +746,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
     self.header = header
     self.descriptors = descriptors
     self.channel_names = [descriptor.name for descriptor in descriptors]
-    average_window_samples = max(
-      1,
-      int(round(FORCE_AVERAGE_WINDOW_SEC*header.log_hz))
-    )
-    self.history = HistoryBuffer(header.capacity + average_window_samples-1)
+    lpf_preroll_samples = int(round(WRENCH_LPF_WARMUP_TIME_CONSTANTS*WRENCH_LPF_TIME_CONSTANT_SEC*header.log_hz))
+    self.history = HistoryBuffer(header.capacity + lpf_preroll_samples)
     self.browser_combo.blockSignals(True)
     self.browser_combo.clear()
     self.browser_combo.addItems(self.channel_names)
@@ -818,26 +867,75 @@ class MonitorWindow(QtWidgets.QMainWindow):
       self._set_curve(f"flight.w.{axis}.state", time, channels["state.w"][:, axis]*RAD2DEG)
       self._set_curve(f"flight.w.{axis}.cmd", time, channels["cmd.w"][:, axis]*RAD2DEG)
 
-  def _update_wrench(self) -> None:
-    names = ("state.R", "state.bpc", "segment.pos", "segment.force", "segment.torque", "body.ellipsoid_pos", "body.ellipsoid_force", "body.ellipsoid_torque")
-    window_samples = max(1, int(round(FORCE_AVERAGE_WINDOW_SEC*self.header.log_hz)))
-    preroll_samples = window_samples-1
-    time, channels = self._data(names, preroll_samples=preroll_samples)
+  def _update_qp_tuning(self) -> None:
+    self._update_qp_timing()
+    names = ("qp.wrench_residual", "qp.delta_u", "cmd.u", "qp.default_input")
+    if not all(name in self.channel_names for name in names):
+      for component in range(6):
+        self.curves[f"qp_tuning.wrench_residual.{component}"].setData([], [])
+        self.curves[f"qp_tuning.delta_u.{component}"].setData([], [])
+        self.curves[f"qp_tuning.input.{component}"].setData([], [])
+        self.curves[f"qp_tuning.default_input.{component}"].setData([], [])
+      return
+    time, channels = self._data(names)
+    time, channels = self._view(time, channels)
     if time.size == 0: return
-    body_aero_force = np.sum(channels["segment.force"], axis=1)+channels["body.ellipsoid_force"]
-    body_aero_moment = (np.sum(np.cross(channels["segment.pos"], channels["segment.force"])+channels["segment.torque"], axis=1) + np.cross(channels["body.ellipsoid_pos"], channels["body.ellipsoid_force"]) + channels["body.ellipsoid_torque"])
-    body_aero_moment -= np.cross(channels["state.bpc"], body_aero_force)
-    world_aero_force = np.einsum("nij,nj->ni", channels["state.R"], body_aero_force)
-    world_aero_moment = np.einsum("nij,nj->ni", channels["state.R"], body_aero_moment)
-    world_aero_force_mean = trailing_mean(world_aero_force, window_samples)
-    world_aero_moment_mean = trailing_mean(world_aero_moment, window_samples)
-    time, wrench = self._crop_to_display(time, {"force": world_aero_force, "force_mean": world_aero_force_mean, "moment": world_aero_moment, "moment_mean": world_aero_moment_mean})
-    time, wrench = self._view(time, wrench)
-    for axis in range(3):
-      self._set_curve(f"wrench.aero_force.{axis}", time, wrench["force"][:, axis])
-      self._set_curve(f"wrench.aero_force_mean.{axis}", time, wrench["force_mean"][:, axis])
-      self._set_curve(f"wrench.aero_moment.{axis}", time, wrench["moment"][:, axis])
-      self._set_curve(f"wrench.aero_moment_mean.{axis}", time, wrench["moment_mean"][:, axis])
+    for component in range(6):
+      self._set_curve(f"qp_tuning.wrench_residual.{component}", time, channels["qp.wrench_residual"][:, component])
+      self._set_curve(f"qp_tuning.delta_u.{component}", time, channels["qp.delta_u"][:, component])
+      self._set_curve(f"qp_tuning.input.{component}", time, channels["cmd.u"][:, component])
+      self._set_curve(f"qp_tuning.default_input.{component}", time, channels["qp.default_input"][:, component])
+
+  def _update_qp_timing(self) -> None:
+    for region in self.qp_fail_regions:
+      self.qp_solve_plot.removeItem(region)
+    self.qp_fail_regions.clear()
+    self.curves["qp_tuning.solve_us"].setData([], [])
+    names = ("qp.solve_us", "qp.solved")
+    if not all(name in self.channel_names for name in names): return
+    time, channels = self._data(names)
+    if time.size == 0: return
+    relative = time-time[0]
+    # Detect failures before display decimation so isolated failures remain visible.
+    failed = channels["qp.solved"].reshape(-1) == 0
+    edges = np.diff(np.r_[False, failed, False].astype(np.int8))
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)
+    interval = 1.0/self.header.log_hz
+    for start, end in zip(starts, ends):
+      left = relative[start]-interval
+      right = relative[end-1]
+      region = pg.LinearRegionItem(
+        values=(left, right), movable=False,
+        brush=pg.mkBrush(160, 70, 180, 55), pen=pg.mkPen(None))
+      region.setZValue(-10)
+      self.qp_solve_plot.addItem(region, ignoreBounds=True)
+      self.qp_fail_regions.append(region)
+    # Keep every logged solve-time sample, including short spikes.
+    self._set_curve("qp_tuning.solve_us", relative, channels["qp.solve_us"].reshape(-1))
+
+  def _update_wrench(self) -> None:
+    names = ("qp.wrench_bar", "mst.wrench")
+    if not all(name in self.channel_names for name in names):
+      for component in range(6):
+        self.curves[f"wrench.bar.{component}"].setData([], [])
+        self.curves[f"wrench.current.{component}"].setData([], [])
+        self.curves[f"wrench.lpf.{component}"].setData([], [])
+      return
+    lpf_preroll_samples = int(round(WRENCH_LPF_WARMUP_TIME_CONSTANTS*WRENCH_LPF_TIME_CONSTANT_SEC*self.header.log_hz))
+    time, channels = self._data(names, preroll_samples=lpf_preroll_samples)
+    if time.size == 0: return
+    values = {
+      "bar": channels["qp.wrench_bar"],
+      "current": channels["mst.wrench"],
+      "lpf": first_order_low_pass(time, channels["mst.wrench"], WRENCH_LPF_TIME_CONSTANT_SEC)
+    }
+    time, values = self._crop_to_display(time, values)
+    time, values = self._view(time, values)
+    for component in range(6):
+      self._set_curve(f"wrench.bar.{component}", time, values["bar"][:, component])
+      self._set_curve(f"wrench.current.{component}", time, values["current"][:, component])
+      self._set_curve(f"wrench.lpf.{component}", time, values["lpf"][:, component])
 
   def _update_joints(self) -> None:
     has_damping_torque = "joint.damping_torque" in self.channel_names
@@ -955,7 +1053,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
     elif index == 3: self._update_strip_flow()
     elif index == 4: self._update_strip_loads()
     elif index == 5: self._update_aggregate()
-    elif index == 6: self._update_browser()
+    elif index == 6: self._update_qp_tuning()
+    elif index == 7: self._update_browser()
 
   def _new_recorder(self) -> None:
     if self.record_enabled and self.reader.header is not None:

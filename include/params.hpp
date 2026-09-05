@@ -15,12 +15,28 @@ namespace param {
 
   inline constexpr bool DISABLE_WAGNER = true;
 
+  // ----- ELRS Parameters -----
+  inline constexpr double ELRS_MIN = 172.0;
+  inline constexpr double ELRS_CENTER = 992.0;
+  inline constexpr double ELRS_MAX = 1810.0;
+  inline constexpr std::size_t ELRS_MODE_CHANNEL = 5;
+  inline constexpr std::uint16_t ELRS_PAUSE_VALUE = static_cast<std::uint16_t>(ELRS_CENTER);
+  inline constexpr std::uint16_t ELRS_INPUT_MANUAL_VALUE = static_cast<std::uint16_t>(ELRS_MAX);
+
+  inline constexpr double ELRS_WRENCH_FX_AT_MIN = -1.0; // [N]
+  inline constexpr double ELRS_WRENCH_FX_AT_MAX =  5.0; // [N]
+  inline constexpr double ELRS_WRENCH_FZ_AT_MIN = -10.0; // [N]
+  inline constexpr double ELRS_WRENCH_FZ_AT_MAX = -20.0; // [N]
+  inline constexpr double ELRS_WRENCH_MX_MAX = 2.0; // [N.m]
+  inline constexpr double ELRS_WRENCH_MY_MAX = 2.0; // [N.m]
+  inline constexpr double ELRS_WRENCH_MZ_MAX = 2.0; // [N.m]
+
   // ----- QP Parameters -----
-  inline constexpr double QP_FORCE_SCALE = 1.0;
-  inline constexpr double QP_MOMENT_SCALE = 0.1;
-  inline constexpr double QP_DELTA_WEIGHT = 1e-3;
+  inline constexpr double QP_WRENCH_WEIGHT[6] = {1.0, 0.5, 1.0, 0.2, 0.2, 0.1};
+  inline constexpr double QP_DELTA_WEIGHT[6]   = {1.0, 0.5, 0.5, 0.5, 0.5, 0.5};
+  inline constexpr double QP_DEFAULT_WEIGHT[6] = {1e-1, 1e-1, 1e-2, 1e-2, 1e-2, 1e-2};
+  inline constexpr int QP_MAX_ITER = 10;
   inline constexpr double QP_EPS_ABS = 1e-5;
-  inline constexpr int QP_MAX_ITER = 100;
 
   // ----- Flapping Motion Parameters -----
   inline constexpr double R1 = 0.45;
@@ -43,6 +59,7 @@ namespace param {
   inline constexpr double MAX_PITCHING_DIFFERENCE =  M_PI / 8.0;
   inline constexpr double MIN_SWEEP_BIAS = -M_PI / 8.0;                // sweep bias [rad]
   inline constexpr double MAX_SWEEP_BIAS =  M_PI / 8.0;
+  inline constexpr double QP_DEFAULT_INPUT[6] = {0.5 * (MIN_FREQ + MAX_FREQ), 0.5 * (MIN_FLAPPING_AMPLITUDE + MAX_FLAPPING_AMPLITUDE), MIN_FLAPPING_DIFFERENCE / 820.0, 0.5 * (MIN_PITCHING_AMPLITUDE + MAX_PITCHING_AMPLITUDE), MIN_PITCHING_DIFFERENCE / 820.0, 0.5 * (MIN_SWEEP_BIAS + MAX_SWEEP_BIAS)};
   inline constexpr double MIXER_B_FD_FRACTION = 1e-3; // fraction of each input range
 
   // ----- model topology -----
