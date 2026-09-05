@@ -38,11 +38,13 @@ namespace mj_utils {
   inline mjtNum g_command_theta_t = param::INITIAL_THETA_T;
   inline mjtNum g_sim_speed = 1.0;
   inline mjtNum g_resume_sim_speed = 1.0;
+  inline mjtNum g_sim_speed_before_lock = 1.0;
 
   inline bool g_left_pressed = false;
   inline bool g_middle_pressed = false;
   inline bool g_right_pressed = false;
   inline bool g_paused = false;
+  inline bool g_sim_speed_locked = false;
   inline std::uint64_t g_reset_epoch = 0;
   inline double g_last_x = 0.0;
   inline double g_last_y = 0.0;
@@ -269,7 +271,27 @@ namespace mj_utils {
     if (!g_paused) {g_resume_sim_speed = g_sim_speed;}
   }
 
+  inline void set_sim_speed_locked(const bool locked) {
+    if (g_sim_speed_locked == locked) {return;}
+
+    if (locked) {
+      g_sim_speed_before_lock = g_sim_speed;
+      g_sim_speed = static_cast<mjtNum>(0.0);
+      g_paused = true;
+      g_sim_speed_locked = true;
+    }
+    else {
+      g_sim_speed_locked = false;
+      g_sim_speed = std::clamp(g_sim_speed_before_lock, static_cast<mjtNum>(0.0), static_cast<mjtNum>(1.0));
+      sync_pause_from_sim_speed();
+    }
+
+    if (g_ui.nsect > 0 && g_ui.sect[0].nitem > 0) {g_ui.sect[0].item[0].state = locked ? 0 : 2;}
+  }
+
   inline void toggle_pause() {
+    if (g_sim_speed_locked) {return;}
+
     if (g_paused) {
       g_sim_speed = std::clamp(g_resume_sim_speed, static_cast<mjtNum>(0.0), static_cast<mjtNum>(1.0));
       if (g_sim_speed <= static_cast<mjtNum>(0.0)) {g_sim_speed = static_cast<mjtNum>(1.0);}
@@ -288,7 +310,10 @@ namespace mj_utils {
     if (!targets_ui) {return false;}
 
     mjuiItem* changed = mjui_event(&g_ui, &g_ui_state, &g_context);
-    if (changed && changed->pdata == &g_sim_speed) {sync_pause_from_sim_speed();}
+    if (changed && changed->pdata == &g_sim_speed) {
+      if (g_sim_speed_locked) {g_sim_speed = static_cast<mjtNum>(0.0);}
+      else {sync_pause_from_sim_speed();}
+    }
     if (changed && changed->pdata == &g_trajectory_view) {g_manus_trajectory.set_enabled(g_trajectory_view == TRAJECTORY_VIEW_ON);}
     return changed != nullptr || g_ui_state.mouserect == g_ui.rectid || g_ui_state.dragrect == g_ui.rectid || (g_ui_state.type == mjEVENT_KEY && g_ui_state.key == 0);
   }

@@ -98,6 +98,7 @@ int main(int argc, char** argv) {
 
   // ---------------- [ Simulation thread ] ----------------
   static std::atomic<bool> g_stop{false};
+  std::atomic<bool> elrs_pause_locked{false};
   
   std::thread th_sim([&]() {
     constexpr std::array<const char*, MST::NUM_SURFACE_LOADS> surface_body_names = {"RWing3", "RWing4", "RWing6", "LWing3", "LWing4", "LWing6", "Tail2", "Tail2"};
@@ -197,10 +198,12 @@ int main(int argc, char** argv) {
 
       // --- Update control phase ---
       if (elrs_enabled) {(void)elrs.update(elrs_channels);}
+      const bool elrs_pause_requested = elrs_enabled && elrs_channels[param::ELRS_MODE_CHANNEL] == param::ELRS_PAUSE_VALUE;
+      elrs_pause_locked.store(elrs_pause_requested, std::memory_order_release);
+
       const double sim_speed = std::clamp(static_cast<double>(viewer_data.sim_speed), 0.0, 1.0);
-      if (sim_speed <= 0.0) {phase.type = Phase::PAUSED;}
+      if (elrs_pause_requested || sim_speed <= 0.0) {phase.type = Phase::PAUSED;}
       else if (!elrs_enabled) {phase.type = Phase::JOINT_MANUAL;}
-      else if (elrs_channels[param::ELRS_MODE_CHANNEL] == param::ELRS_PAUSE_VALUE) {phase.type = Phase::PAUSED;}
       else if (elrs_channels[param::ELRS_MODE_CHANNEL] == param::ELRS_INPUT_MANUAL_VALUE) {phase.type = Phase::INPUT_MANUAL;}
       else {phase.type = Phase::WRENCH_MANUAL;}
 
@@ -431,6 +434,12 @@ int main(int argc, char** argv) {
 
     // --- Process viewer input without simulation-state access ---
     glfwPollEvents();
+
+    const bool sim_speed_locked = elrs_pause_locked.load(std::memory_order_acquire);
+    if (sim_speed_locked != mj_utils::g_sim_speed_locked) {
+      mj_utils::set_sim_speed_locked(sim_speed_locked);
+      mjui_update(-1, -1, &mj_utils::g_ui, &mj_utils::g_ui_state, &mj_utils::g_context);
+    }
 
     if (mj_utils::g_reset_epoch != handled_viewer_reset_epoch) {
       mj_utils::g_command_theta = param::INITIAL_DES_THETA;
